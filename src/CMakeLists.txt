@@ -143,7 +143,12 @@ if(APPLE)
     set( SDL2_LIBRARIES ${SDL2_LIBRARY} )
 endif(APPLE)
 
-add_executable( hypseus hypseus.cpp globals.h )
+set(HYPSEUS_SOURCES hypseus.cpp globals.h)
+if(WIN32)
+    list(APPEND HYPSEUS_SOURCES hypseus.rc)
+endif()
+
+add_executable( hypseus ${HYPSEUS_SOURCES} )
 target_link_libraries( hypseus plog io timer sound video cpu game ${Vorbis_Enc_LIBRARY} Vorbis::vorbis ${OGG_LIBRARIES} ${VORBISFILE_LIBRARIES} ${Vorbis_File_LIBRARY} ${SDL2_LIBRARIES} ${SDL2_TTF_LIBRARY} ${SDL2_MIXER_LIBRARY} ${SDL2_IMAGE_LIBRARY} ${LIBZIP_LIBRARY} )
 
 if(ASAN)
