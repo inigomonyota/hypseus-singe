@@ -31,10 +31,19 @@ if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
     list(APPEND DOWNLOAD_ARGS DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 endif()
 
-add_compile_options(-Wall)
+# Set compiler warning flags
+if (MSVC)
+    add_compile_options(/W4)
+    # Disable specific MSVC warnings that are too noisy
+    add_compile_options(/wd4244 /wd4267 /wd4996)
+else()
+    add_compile_options(-Wall)
+endif()
 
 if (ASAN)
-    add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
+    if (NOT MSVC)
+        add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
+    endif()
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules")
@@ -52,15 +61,19 @@ include(BuildSupport)
 include(GNUInstallDirs)
 include(GetGitRevisionDescription)
 include(InstallRequiredSystemLibraries)
-include(FindPkgConfig)
+if(NOT WIN32 OR NOT MSVC)
+    include(FindPkgConfig)
+endif()
 include(ExternalProject)
 include(BuildLibMPEG2)
 
 use_cxx11( )
 
-PKG_SEARCH_MODULE(SDL2 REQUIRED sdl2)
-PKG_SEARCH_MODULE(SDL2_TTF REQUIRED SDL2_ttf)
-PKG_SEARCH_MODULE(SDL2_MIXER REQUIRED SDL2_mixer)
+if(NOT WIN32 OR NOT MSVC)
+    PKG_SEARCH_MODULE(SDL2 REQUIRED sdl2)
+    PKG_SEARCH_MODULE(SDL2_TTF REQUIRED SDL2_ttf)
+    PKG_SEARCH_MODULE(SDL2_MIXER REQUIRED SDL2_mixer)
+endif()
 build_libmpeg2( )
 
 message(STATUS "Target: ${CMAKE_SYSTEM_NAME} ${CMAKE_TARGET_ARCHITECTURES}")
@@ -92,7 +105,11 @@ include_directories(
 )
 
 if( "${CMAKE_TARGET_ARCHITECTURES}" MATCHES "i386" )
-    enable_language( ASM )
+    if( MSVC )
+        enable_language( ASM_MASM )
+    else()
+        enable_language( ASM )
+    endif()
     set(can_use_assembler TRUE)
 endif()
 
@@ -130,11 +147,18 @@ if(APPLE)
     set( SDL2_LIBRARIES ${SDL2_LIBRARY} )
 endif(APPLE)
 
-add_executable( hypseus hypseus.cpp globals.h )
+set(HYPSEUS_SOURCES hypseus.cpp globals.h)
+if(WIN32)
+    list(APPEND HYPSEUS_SOURCES hypseus.rc)
+endif()
+
+add_executable( hypseus ${HYPSEUS_SOURCES} )
 target_link_libraries( hypseus plog io timer sound video cpu game ${Vorbis_Enc_LIBRARY} Vorbis::vorbis ${OGG_LIBRARIES} ${VORBISFILE_LIBRARIES} ${Vorbis_File_LIBRARY} ${SDL2_LIBRARIES} ${SDL2_TTF_LIBRARY} ${SDL2_MIXER_LIBRARY} ${SDL2_IMAGE_LIBRARY} ${LIBZIP_LIBRARY} )
 
 if(ASAN)
-    target_link_options(hypseus PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+    if(NOT MSVC)
+        target_link_options(hypseus PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+    endif()
 endif()
 
 #[[

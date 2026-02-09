@@ -1,0 +1,17 @@
+{
+  "name": "hypseus-singe",
+  "version-string": "2.11.7",
+  "description": "Hypseus Singe - Arcade Laserdisc Emulator",
+  "homepage": "https://github.com/DirtBagXon/hypseus-singe",
+  "license": "GPL-3.0",
+  "dependencies": [
+    "sdl2",
+    "sdl2-ttf",
+    "sdl2-image",
+    "sdl2-mixer",
+    "zlib",
+    "libzip",
+    "libogg",
+    "libvorbis"
+  ]
+}

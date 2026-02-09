@@ -24,6 +24,8 @@ Features:
 
 **Windows** files and documentation can be found [here](win32/)
 
+To **build from source** on Windows with Visual Studio 2022, see [BUILD_WINDOWS.md](BUILD_WINDOWS.md)
+
 ![Borf Launcher](screenshots/borf.png)
 
 ## Compile

@@ -5,6 +5,20 @@
 #  OGG_LIBRARIES    - List of libraries when using ogg.
 #  OGG_FOUND        - True if ogg found.
 
+# First try to find Ogg using CMake config (vcpkg provides this)
+find_package(Ogg QUIET CONFIG)
+
+if(Ogg_FOUND OR OGG_FOUND)
+	# Found via CMake config, Ogg::ogg target should be available
+	if(NOT TARGET Ogg::ogg AND TARGET Ogg)
+		# Some configs define 'Ogg' instead of 'Ogg::ogg'
+		add_library(Ogg::ogg ALIAS Ogg)
+	endif()
+	message(STATUS "Ogg found via CMake config")
+	return()
+endif()
+
+# Fallback to manual finding for systems without CMake config
 if (OGG_INCLUDE_DIR)
 	# Already in cache, be silent
 	set(OGG_FIND_QUIETLY TRUE)

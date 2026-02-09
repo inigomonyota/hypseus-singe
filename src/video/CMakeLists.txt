@@ -6,8 +6,16 @@ set( LIB_SOURCES
     palette.cpp
     splash.cpp
     rgb2yuv.cpp
-    rgb2yuv-gas.s
 )
+
+# Add assembly file based on platform and architecture
+if( "${CMAKE_TARGET_ARCHITECTURES}" MATCHES "i386" )
+    if( MSVC )
+        list( APPEND LIB_SOURCES rgb2yuv-masm.asm )
+    else()
+        list( APPEND LIB_SOURCES rgb2yuv-gas.s )
+    endif()
+endif()
 
 set( LIB_HEADERS
     led.h
@@ -20,8 +28,10 @@ set( LIB_HEADERS
     yuv2rgb_lookup.h
 )
 
-set_source_files_properties(SDL_FontCache.c PROPERTIES COMPILE_FLAGS -Wno-maybe-uninitialized)
-set_source_files_properties(video.cpp PROPERTIES COMPILE_FLAGS -Wno-unused-const-variable)
+if(NOT MSVC)
+    set_source_files_properties(SDL_FontCache.c PROPERTIES COMPILE_FLAGS -Wno-maybe-uninitialized)
+    set_source_files_properties(video.cpp PROPERTIES COMPILE_FLAGS -Wno-unused-const-variable)
+endif()
 
 add_library( video ${LIB_SOURCES} ${LIB_HEADERS} )
 target_link_libraries( video plog )

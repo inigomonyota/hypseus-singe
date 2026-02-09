@@ -1,0 +1,70 @@
+name: CMake-Windows-VS2022
+
+on:
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: 'Log level'
+        required: true
+        default: 'warning'
+      tags:
+        description: 'Windows Build with Visual Studio 2022'
+env:
+  BUILD_TYPE: Release
+  VCPKG_DEFAULT_TRIPLET: x64-windows
+
+jobs:
+  build:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        # Using vcpkg baseline from January 2024 for stable dependencies
+        vcpkgGitCommitId: 'c8696863d371ab7f46e213d8f5ca923c4ff88618'
+        
+    - name: Install Dependencies via vcpkg
+      run: |
+        vcpkg install sdl2:x64-windows
+        vcpkg install sdl2-ttf:x64-windows
+        vcpkg install sdl2-image:x64-windows
+        vcpkg install sdl2-mixer:x64-windows
+        vcpkg install zlib:x64-windows
+        vcpkg install libzip:x64-windows
+        vcpkg install libogg:x64-windows
+        vcpkg install libvorbis:x64-windows
+        
+    - name: Configure CMake
+      run: |
+        cmake -B build -S src `
+          -G "Visual Studio 17 2022" -A x64 `
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET=x64-windows
+          
+    - name: Build
+      run: cmake --build build --config ${{ env.BUILD_TYPE }}
+      
+    - name: Package
+      run: |
+        Copy-Item "build/${{ env.BUILD_TYPE }}/hypseus.exe" -Destination "."
+        Copy-Item "screenshots/hypseus-logo.png" -Destination "hypseus.png"
+        $files = @("hypseus.exe", "LICENSE", "README.md", "hypseus.png", "fonts/", "midi/", "pics/", "roms/", "sound/", "scripts/")
+        Compress-Archive -Path $files -DestinationPath hypseus-singe-win64.zip
+        
+    - name: Create Distribution
+      id: vars
+      shell: bash
+      run: |
+        ShortSHA=$(git rev-parse --short ${{ github.sha }})
+        echo "COMMIT_SHORT_SHA=$ShortSHA" >> $GITHUB_ENV
+        
+    - uses: actions/upload-artifact@v4
+      with:
+        name: hypseus-singe-win64-${{ env.COMMIT_SHORT_SHA }}
+        path: hypseus-singe-win64.zip
