@@ -2,6 +2,8 @@
 
 This document describes how to build Hypseus Singe from source on Windows using Visual Studio 2022.
 
+> **Note:** The commands in this guide use PowerShell syntax (backticks `` ` `` for line continuation and forward slashes `/` for paths). These commands work in both PowerShell and Command Prompt. If you prefer traditional Command Prompt syntax, replace backticks with `^` and use backslashes `\` for paths if needed.
+
 ## Prerequisites
 
 1. **Visual Studio 2022** - Community, Professional, or Enterprise edition
@@ -25,13 +27,13 @@ This document describes how to build Hypseus Singe from source on Windows using 
 1. Open a **Developer Command Prompt for VS 2022** or **Developer PowerShell for VS 2022**
 
 2. Clone the repository:
-   ```cmd
+   ```powershell
    git clone https://github.com/DirtBagXon/hypseus-singe.git
    cd hypseus-singe
    ```
 
 3. Install vcpkg (if not already installed):
-   ```cmd
+   ```powershell
    git clone https://github.com/microsoft/vcpkg.git
    cd vcpkg
    .\bootstrap-vcpkg.bat
@@ -39,27 +41,27 @@ This document describes how to build Hypseus Singe from source on Windows using 
    ```
 
 4. Install dependencies via vcpkg:
-   ```cmd
-   vcpkg\vcpkg install sdl2:x64-windows
-   vcpkg\vcpkg install sdl2-ttf:x64-windows
-   vcpkg\vcpkg install sdl2-image:x64-windows
-   vcpkg\vcpkg install sdl2-mixer:x64-windows
-   vcpkg\vcpkg install zlib:x64-windows
-   vcpkg\vcpkg install libzip:x64-windows
-   vcpkg\vcpkg install libogg:x64-windows
-   vcpkg\vcpkg install libvorbis:x64-windows
+   ```powershell
+   vcpkg/vcpkg install sdl2:x64-windows
+   vcpkg/vcpkg install sdl2-ttf:x64-windows
+   vcpkg/vcpkg install sdl2-image:x64-windows
+   vcpkg/vcpkg install sdl2-mixer:x64-windows
+   vcpkg/vcpkg install zlib:x64-windows
+   vcpkg/vcpkg install libzip:x64-windows
+   vcpkg/vcpkg install libogg:x64-windows
+   vcpkg/vcpkg install libvorbis:x64-windows
    ```
 
 5. Configure the project with CMake:
-   ```cmd
-   cmake -B build -S src -G "Visual Studio 17 2022" -A x64 ^
-     -DCMAKE_BUILD_TYPE=Release ^
-     -DCMAKE_TOOLCHAIN_FILE=vcpkg\scripts\buildsystems\vcpkg.cmake ^
+   ```powershell
+   cmake -B build -S src -G "Visual Studio 17 2022" -A x64 `
+     -DCMAKE_BUILD_TYPE=Release `
+     -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake `
      -DVCPKG_TARGET_TRIPLET=x64-windows
    ```
 
 6. Build the project:
-   ```cmd
+   ```powershell
    cmake --build build --config Release
    ```
 
@@ -67,20 +69,20 @@ This document describes how to build Hypseus Singe from source on Windows using 
 
 ### Option 2: Using Visual Studio IDE
 
-1. Open a **Developer Command Prompt for VS 2022**
+1. Open a **Developer Command Prompt for VS 2022** or **Developer PowerShell for VS 2022**
 
 2. Clone the repository and install dependencies (steps 2-4 from Option 1)
 
 3. Configure the project with CMake:
-   ```cmd
-   cmake -B build -S src -G "Visual Studio 17 2022" -A x64 ^
-     -DCMAKE_TOOLCHAIN_FILE=vcpkg\scripts\buildsystems\vcpkg.cmake ^
+   ```powershell
+   cmake -B build -S src -G "Visual Studio 17 2022" -A x64 `
+     -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake `
      -DVCPKG_TARGET_TRIPLET=x64-windows
    ```
 
 4. Open the generated solution file:
-   ```cmd
-   start build\hypseus.sln
+   ```powershell
+   start build/hypseus.sln
    ```
 
 5. In Visual Studio:
@@ -93,13 +95,13 @@ This document describes how to build Hypseus Singe from source on Windows using 
 The repository includes a `vcpkg.json` manifest file for automatic dependency management:
 
 1. Clone the repository:
-   ```cmd
+   ```powershell
    git clone https://github.com/DirtBagXon/hypseus-singe.git
    cd hypseus-singe
    ```
 
 2. Install vcpkg (if not already installed):
-   ```cmd
+   ```powershell
    git clone https://github.com/microsoft/vcpkg.git
    cd vcpkg
    .\bootstrap-vcpkg.bat
@@ -107,10 +109,10 @@ The repository includes a `vcpkg.json` manifest file for automatic dependency ma
    ```
 
 3. Configure and build with CMake (dependencies will be installed automatically):
-   ```cmd
-   cmake -B build -S src -G "Visual Studio 17 2022" -A x64 ^
-     -DCMAKE_BUILD_TYPE=Release ^
-     -DCMAKE_TOOLCHAIN_FILE=vcpkg\scripts\buildsystems\vcpkg.cmake ^
+   ```powershell
+   cmake -B build -S src -G "Visual Studio 17 2022" -A x64 `
+     -DCMAKE_BUILD_TYPE=Release `
+     -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake `
      -DVCPKG_TARGET_TRIPLET=x64-windows
    
    cmake --build build --config Release
@@ -125,10 +127,10 @@ To build a 32-bit version, use the following changes:
 - Use `-DVCPKG_TARGET_TRIPLET=x86-windows` instead of `x64-windows`
 
 Example:
-```cmd
-cmake -B build -S src -G "Visual Studio 17 2022" -A Win32 ^
-  -DCMAKE_BUILD_TYPE=Release ^
-  -DCMAKE_TOOLCHAIN_FILE=vcpkg\scripts\buildsystems\vcpkg.cmake ^
+```powershell
+cmake -B build -S src -G "Visual Studio 17 2022" -A Win32 `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake `
   -DVCPKG_TARGET_TRIPLET=x86-windows
 ```
 
@@ -151,16 +153,16 @@ Make sure you have the Windows SDK installed as part of Visual Studio. You can m
 After building, you'll need to:
 
 1. Copy the necessary DLL files from vcpkg:
-   ```cmd
-   copy vcpkg\installed\x64-windows\bin\*.dll build\Release\
+   ```powershell
+   copy vcpkg/installed/x64-windows/bin/*.dll build/Release/
    ```
 
 2. Ensure the following folders exist in your Hypseus directory:
    - `pics/`, `fonts/`, `ram/`, `roms/`, `midi/`, `sound/`, `singe/`, `vldp/`
 
 3. Run hypseus with appropriate arguments:
-   ```cmd
-   build\Release\hypseus.exe lair vldp -framefile vldp\lair\lair.txt
+   ```powershell
+   build/Release/hypseus.exe lair vldp -framefile vldp/lair/lair.txt
    ```
 
 For more information about running Hypseus Singe, see the main [README.md](README.md) and [win32/README.md](win32/README.md).
