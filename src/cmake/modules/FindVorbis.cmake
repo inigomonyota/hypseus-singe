@@ -67,6 +67,26 @@ A user may set ``Vorbis_ROOT`` to a vorbis installation root to tell this module
 
 #]=======================================================================]
 
+# First try to find Vorbis using CMake config (vcpkg provides this)
+find_package(Vorbis QUIET CONFIG)
+
+if(Vorbis_FOUND)
+	# Found via CMake config
+	# Ensure the expected targets exist
+	if(TARGET Vorbis::vorbis)
+		set(Vorbis_Vorbis_FOUND TRUE)
+	endif()
+	if(TARGET Vorbis::vorbisenc)
+		set(Vorbis_Enc_FOUND TRUE)
+	endif()
+	if(TARGET Vorbis::vorbisfile)
+		set(Vorbis_File_FOUND TRUE)
+	endif()
+	message(STATUS "Vorbis found via CMake config")
+	return()
+endif()
+
+# Fallback to manual finding for systems without CMake config
 if (Vorbis_Vorbis_INCLUDE_DIR)
 	# Already in cache, be silent
 	set (Vorbis_FIND_QUIETLY TRUE)
