@@ -24,7 +24,9 @@ set( LIB_HEADERS
 )
 
 if( APPLE )
-    set_source_files_properties( usb_scoreboard.cpp PROPERTIES COMPILE_FLAGS -Wno-unused-variable )
+    if(NOT MSVC)
+        set_source_files_properties( usb_scoreboard.cpp PROPERTIES COMPILE_FLAGS -Wno-unused-variable )
+    endif()
 endif( APPLE )
 
 add_library( scoreboard ${LIB_SOURCES} ${LIB_HEADERS} )

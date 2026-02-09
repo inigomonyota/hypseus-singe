@@ -68,7 +68,9 @@ endif()
 
 include_directories( ${ZLIB_INCLUDE_DIRS} )
 
-set_source_files_properties( zippp.cpp PROPERTIES COMPILE_FLAGS -Wno-deprecated-declarations )
+if(NOT MSVC)
+    set_source_files_properties( zippp.cpp PROPERTIES COMPILE_FLAGS -Wno-deprecated-declarations )
+endif()
 
 add_library( io ${LIB_SOURCES} ${LIB_HEADERS} )
 target_link_libraries( io ldp-out game plog manymouse ${ZLIB_LIBRARIES} ${LIBZIP_LIBRARY})

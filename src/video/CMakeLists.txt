@@ -20,8 +20,10 @@ set( LIB_HEADERS
     yuv2rgb_lookup.h
 )
 
-set_source_files_properties(SDL_FontCache.c PROPERTIES COMPILE_FLAGS -Wno-maybe-uninitialized)
-set_source_files_properties(video.cpp PROPERTIES COMPILE_FLAGS -Wno-unused-const-variable)
+if(NOT MSVC)
+    set_source_files_properties(SDL_FontCache.c PROPERTIES COMPILE_FLAGS -Wno-maybe-uninitialized)
+    set_source_files_properties(video.cpp PROPERTIES COMPILE_FLAGS -Wno-unused-const-variable)
+endif()
 
 add_library( video ${LIB_SOURCES} ${LIB_HEADERS} )
 target_link_libraries( video plog )

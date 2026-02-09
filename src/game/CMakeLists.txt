@@ -67,11 +67,15 @@ if( BUILD_SINGE )
     list( APPEND LIB_HEADERS singe.h )
 
 # ignore gcc: warning: j = *((int*)(&s)); ASCII char*=>int (handle_cmdline_arg)
-set_source_files_properties( singe.cpp PROPERTIES COMPILE_FLAGS -Wno-strict-aliasing)
+if(NOT MSVC)
+    set_source_files_properties( singe.cpp PROPERTIES COMPILE_FLAGS -Wno-strict-aliasing)
+endif()
 endif( BUILD_SINGE )
 
 # ignore gcc: warning: promoted ~unsigned is always non-zero [-Wsign-compare] (do_nmi coin check)
-set_source_files_properties( laireuro.cpp PROPERTIES COMPILE_FLAGS -Wno-sign-compare)
+if(NOT MSVC)
+    set_source_files_properties( laireuro.cpp PROPERTIES COMPILE_FLAGS -Wno-sign-compare)
+endif()
 
 add_library( game ${LIB_SOURCES} ${LIB_HEADERS} )
 target_link_libraries( game sound scoreboard video io plog )

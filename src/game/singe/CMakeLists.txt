@@ -34,10 +34,14 @@ if( ABSTRACT_SINGE )
     set_source_files_properties( luretro.c PROPERTIES COMPILE_FLAGS -DABSTRACT_SINGE )
 endif( ABSTRACT_SINGE )
 
-set_source_files_properties( random.c rs232_windows.c PROPERTIES COMPILE_FLAGS -Wno-unused-function )
+if(NOT MSVC)
+    set_source_files_properties( random.c rs232_windows.c PROPERTIES COMPILE_FLAGS -Wno-unused-function )
+endif()
 
 if( CMAKE_SYSTEM_PROCESSOR MATCHES "arm*|aarch64" )
-    set_source_files_properties( singeproxy.cpp PROPERTIES COMPILE_FLAGS -Wno-psabi )
+    if(NOT MSVC)
+        set_source_files_properties( singeproxy.cpp PROPERTIES COMPILE_FLAGS -Wno-psabi )
+    endif()
 endif()
 
 add_library( singeproxy ${LIB_SOURCES} ${LIB_HEADERS} )
