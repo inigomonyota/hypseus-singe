@@ -105,7 +105,11 @@ include_directories(
 )
 
 if( "${CMAKE_TARGET_ARCHITECTURES}" MATCHES "i386" )
-    enable_language( ASM )
+    if( MSVC )
+        enable_language( ASM_MASM )
+    else()
+        enable_language( ASM )
+    endif()
     set(can_use_assembler TRUE)
 endif()
 

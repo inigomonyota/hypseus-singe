@@ -6,8 +6,16 @@ set( LIB_SOURCES
     palette.cpp
     splash.cpp
     rgb2yuv.cpp
-    rgb2yuv-gas.s
 )
+
+# Add assembly file based on platform and architecture
+if( "${CMAKE_TARGET_ARCHITECTURES}" MATCHES "i386" )
+    if( MSVC )
+        list( APPEND LIB_SOURCES rgb2yuv-masm.asm )
+    else()
+        list( APPEND LIB_SOURCES rgb2yuv-gas.s )
+    endif()
+endif()
 
 set( LIB_HEADERS
     led.h
