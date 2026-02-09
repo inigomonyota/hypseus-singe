@@ -120,7 +120,7 @@ The repository includes a `vcpkg.json` manifest file for automatic dependency ma
 
 To build a 32-bit version, use the following changes:
 
-- In step 4 of Option 1, use `:x86-windows` instead of `:x64-windows` for vcpkg packages
+- In the vcpkg install commands (step 4 of Option 1), use the `:x86-windows` triplet suffix instead of `:x64-windows` for all packages
 - In CMake configuration, use `-A Win32` instead of `-A x64`
 - Use `-DVCPKG_TARGET_TRIPLET=x86-windows` instead of `x64-windows`
 
