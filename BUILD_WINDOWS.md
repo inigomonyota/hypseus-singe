@@ -136,9 +136,37 @@ cmake -B build -S src -G "Visual Studio 17 2022" -A Win32 `
 
 ## Troubleshooting
 
-### CMake cannot find dependencies
+### CMake cannot find ZLIB or other dependencies
 
-Make sure you're using the correct vcpkg toolchain file path and that all dependencies were installed successfully. Check the vcpkg installation logs for any errors.
+If you see errors like "Could NOT find ZLIB" or similar:
+
+1. **Verify vcpkg installation**: Make sure vcpkg installed the packages successfully
+   ```powershell
+   vcpkg list
+   ```
+   You should see all the required packages (zlib, libzip, sdl2, etc.) listed.
+
+2. **Check toolchain file path**: Ensure the `-DCMAKE_TOOLCHAIN_FILE` path is correct and uses forward slashes:
+   ```powershell
+   -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake
+   ```
+
+3. **Verify triplet**: Make sure you're using the same triplet (x64-windows or x86-windows) for both vcpkg package installation and CMake configuration.
+
+4. **Clean and reconfigure**: If you previously ran CMake without the toolchain file, clean the build directory:
+   ```powershell
+   Remove-Item -Recurse -Force build
+   cmake -B build -S src -G "Visual Studio 17 2022" -A x64 `
+     -DCMAKE_BUILD_TYPE=Release `
+     -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake `
+     -DVCPKG_TARGET_TRIPLET=x64-windows
+   ```
+
+### CMake warning: "Ignoring extra path from command line"
+
+This usually occurs when using backslashes in paths in PowerShell. Use forward slashes instead:
+- Correct: `vcpkg/scripts/buildsystems/vcpkg.cmake`
+- Incorrect: `vcpkg\scripts\buildsystems\vcpkg.cmake`
 
 ### Link errors related to SDL2
 
