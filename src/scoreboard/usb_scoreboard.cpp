@@ -29,6 +29,27 @@
 #include <cstdio>
 #include <cstdint>
 
+#if defined(_WIN32) || defined(_WIN64)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+static inline void sleep_us(unsigned int usec) {
+    // Windows Sleep() is millisecond granularity. Round up.
+    DWORD ms = (DWORD)((usec + 999) / 1000);
+    if (ms == 0) ms = 1;
+    Sleep(ms);
+}
+#else
+#include <time.h>
+
+static inline void sleep_us(unsigned int usec) {
+    struct timespec ts;
+    ts.tv_sec = (time_t)(usec / 1000000u);
+    ts.tv_nsec = (long)((usec % 1000000u) * 1000u);
+    nanosleep(&ts, nullptr);
+}
+#endif
+
 serialib g_usb_serial;
 bool g_serial_rts = false, g_serial_saeboot = false;
 
@@ -91,8 +112,7 @@ bool USBScoreboard::USBInit() {
 
     int usb = g_usb_serial.openDevice(device, baud);
 
-    struct timespec delta = {0, 10000000};
-    nanosleep(&delta, &delta);
+    sleep_us(1000);
 
     if (usb != 1)
     {
@@ -107,7 +127,7 @@ bool USBScoreboard::USBInit() {
     g_usb_serial.RTS(get_usb_rts());
     g_serial_rts = true;
 
-    nanosleep(&delta, &delta);
+    sleep_us(1000);
     g_usb_serial.flushReceiver();
 
     return true;

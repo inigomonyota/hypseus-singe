@@ -12,14 +12,24 @@ set( LIB_HEADERS
     ldp-vldp.h
 )
 
-IF(NOT APPLE)
-    PKG_SEARCH_MODULE(VORBISFILE REQUIRED vorbisfile)
-ENDIF(NOT APPLE)
+if(NOT APPLE AND NOT WIN32)
+  find_package(PkgConfig REQUIRED)
+  pkg_search_module(VORBISFILE REQUIRED vorbisfile)
+endif()
 
-find_package(Vorbis REQUIRED)
-find_package(Ogg REQUIRED)
+if(WIN32 AND MSVC)
+    find_package(ogg CONFIG REQUIRED)
+    find_package(vorbis CONFIG REQUIRED)
+else()
+    find_package(Ogg REQUIRED)
+    find_package(Vorbis REQUIRED)
+endif()
 
-include_directories( ${Vorbis_File_INCLUDE_DIR} ${OGG_INCLUDE_DIRS})
+add_library(ldp-out ${LIB_SOURCES} ${LIB_HEADERS})
 
-add_library( ldp-out ${LIB_SOURCES} ${LIB_HEADERS} )
-target_link_libraries( ldp-out vldp game ${VORBISFILE_LIBRARIES} ${SDL2_LIBRARY} )
+target_link_libraries(ldp-out PRIVATE
+  vldp game
+  $<$<BOOL:${WIN32}>:Vorbis::vorbisfile;Ogg::ogg>
+  $<$<NOT:$<BOOL:${WIN32}>>:${VORBISFILE_LIBRARIES}>
+  ${SDL2_LIBRARY}
+)

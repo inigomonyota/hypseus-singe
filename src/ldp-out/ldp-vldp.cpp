@@ -52,6 +52,14 @@
 #include <stdlib.h>
 #include <time.h>
 
+#if defined(_MSC_VER)
+#include <string.h>
+#define strcasecmp _stricmp
+#define strncasecmp _strnicmp
+#else
+#include <strings.h>
+#endif
+
 #define API_VERSION 11
 
 // let compiler compute this ...

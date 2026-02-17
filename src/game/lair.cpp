@@ -50,6 +50,27 @@
 #include "../cpu/cpu.h"
 #include "../cpu/generic_z80.h"
 
+#if defined(_WIN32) || defined(_WIN64)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+static inline void sleep_us(unsigned int usec) {
+    // Windows Sleep() is millisecond granularity. Round up.
+    DWORD ms = (DWORD)((usec + 999) / 1000);
+    if (ms == 0) ms = 1;
+    Sleep(ms);
+}
+#else
+#include <time.h>
+
+static inline void sleep_us(unsigned int usec) {
+    struct timespec ts;
+    ts.tv_sec = (time_t)(usec / 1000000u);
+    ts.tv_nsec = (long)((usec % 1000000u) * 1000u);
+    nanosleep(&ts, nullptr);
+}
+#endif
+
 bool g_bUsbAnnunciator = false;
 bool g_bBootLog = true;
 
@@ -881,12 +902,10 @@ void lair::palette_calculate()
 }
 
 // frees any images we loaded in, etc
-void lair::shutdown()
-{
+void lair::shutdown() {
     if (g_bUsbAnnunciator) {
         change_led(false, false, false);
-        struct timespec delta = {0, 300000};
-        nanosleep(&delta, &delta); // Let serial flush
+        sleep_us(300); // Let serial flush (0.3 ms; Windows rounds up to ~1 ms)
     }
 
     // IMPORTANT: the scoreboard must always be shut down even if in VLDP mode,

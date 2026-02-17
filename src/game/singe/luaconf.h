@@ -642,15 +642,45 @@ union luai_Cast { double l_d; long l_l; };
 */
 #if defined(loslib_c) || defined(luaall_c)
 
+#if defined(_WIN32) || defined(_WIN64)
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <io.h>        // _close
+#include <fcntl.h>     // _O_*
+#include <sys/stat.h>  // _S_*
+
+#define LUA_TMPNAMBUFSIZE  260
+
+// Creates a temp file and returns "e" as boolean error flag (0 = ok, 1 = error)
+#define lua_tmpnam(b,e) do { \
+    char _path[MAX_PATH]; \
+    char _file[MAX_PATH]; \
+    DWORD _n = GetTempPathA(MAX_PATH, _path); \
+    if (_n == 0 || _n > MAX_PATH) { (e) = 1; (b)[0] = '\0'; break; } \
+    UINT _u = GetTempFileNameA(_path, "lua", 0, _file); \
+    if (_u == 0) { (e) = 1; (b)[0] = '\0'; break; } \
+    lstrcpynA((b), _file, LUA_TMPNAMBUFSIZE); \
+    (e) = 0; \
+} while(0)
+
+#else  // Unix
+
 #include <unistd.h>
-#define LUA_TMPNAMBUFSIZE	32
-#define lua_tmpnam(b,e)	{ \
-	strcpy(b, "/tmp/lua_XXXXXX"); \
-	e = mkstemp(b); \
-	if (e != -1) close(e); \
-	e = (e == -1); }
+#include <string.h>
+
+#define LUA_TMPNAMBUFSIZE  32
+#define lua_tmpnam(b,e) do { \
+    strcpy((b), "/tmp/lua_XXXXXX"); \
+    int _fd = mkstemp((b)); \
+    if (_fd != -1) close(_fd); \
+    (e) = (_fd == -1); \
+} while(0)
 
 #endif
+
+#endif
+
 
 
 /*

@@ -29,7 +29,7 @@
 #include <sys/stat.h>
 //#include <unistd.h>
 //#include "inttypesreplace.h"
-#include <SDL.h>
+#include <SDL2/SDL.h>
 
 #include "vldp_internal.h"
 #include "vldp_common.h"
@@ -41,7 +41,7 @@
 
 #include <inttypes.h>
 
-#include <mpeg2.h>
+#include <mpeg2dec/mpeg2.h>
 
 #ifdef VLDP_DEBUG
 #define FRAMELOG "frame_report.txt"

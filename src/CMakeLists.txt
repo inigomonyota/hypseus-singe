@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
+cmake_policy(SET CMP0079 NEW)
 
 set(PKG_VERSION "v2.11.7")
 
@@ -61,20 +62,31 @@ include(BuildSupport)
 include(GNUInstallDirs)
 include(GetGitRevisionDescription)
 include(InstallRequiredSystemLibraries)
+include(ExternalProject)
+
+# Only used on non-MSVC toolchains
 if(NOT WIN32 OR NOT MSVC)
     include(FindPkgConfig)
 endif()
-include(ExternalProject)
-include(BuildLibMPEG2)
 
-use_cxx11( )
+if(WIN32 AND MSVC)
+    # vcpkg libmpeg2 does not reliably export a *Config.cmake*, so do manual lookup.
+    find_path(LIBMPEG2_INCLUDE_DIR NAMES mpeg2dec/mpeg2.h)
+    find_library(LIBMPEG2_LIBRARY NAMES mpeg2 mpeg2dec libmpeg2)
 
-if(NOT WIN32 OR NOT MSVC)
-    PKG_SEARCH_MODULE(SDL2 REQUIRED sdl2)
-    PKG_SEARCH_MODULE(SDL2_TTF REQUIRED SDL2_ttf)
-    PKG_SEARCH_MODULE(SDL2_MIXER REQUIRED SDL2_mixer)
+    if(NOT LIBMPEG2_INCLUDE_DIR OR NOT LIBMPEG2_LIBRARY)
+        message(FATAL_ERROR "libmpeg2 not found. Run: vcpkg install libmpeg2:x64-windows")
+    endif()
+
+    add_library(hypseus_libmpeg2 INTERFACE)
+    target_include_directories(hypseus_libmpeg2 INTERFACE ${LIBMPEG2_INCLUDE_DIR})
+    target_link_libraries(hypseus_libmpeg2 INTERFACE ${LIBMPEG2_LIBRARY})
+else()
+    include(BuildLibMPEG2)
+    build_libmpeg2()
 endif()
-build_libmpeg2( )
+
+use_cxx11()
 
 message(STATUS "Target: ${CMAKE_SYSTEM_NAME} ${CMAKE_TARGET_ARCHITECTURES}")
 
@@ -99,10 +111,8 @@ if("${VER_GIT_DIRTY}" MATCHES "-dirty")
 endif()
 message(STATUS "Version: ${VER_TAG}")
 
-include_directories(
-    ${PROJECT_BINARY_DIR} # config.h
-    ${SDL2_INCLUDE_DIRS}
-)
+# config.h include path (SDL includes come from targets/shim)
+include_directories(${PROJECT_BINARY_DIR})
 
 if( "${CMAKE_TARGET_ARCHITECTURES}" MATCHES "i386" )
     if( MSVC )
@@ -118,6 +128,71 @@ configure_file(
     "${PROJECT_BINARY_DIR}/config.h"
 )
 
+# ---- Dependencies ----
+if(WIN32 AND MSVC)
+    # vcpkg/VS: CONFIG packages + imported targets
+    find_package(SDL2 CONFIG REQUIRED)
+    find_package(SDL2_ttf CONFIG REQUIRED)
+    find_package(SDL2_image CONFIG REQUIRED)
+    find_package(SDL2_mixer CONFIG REQUIRED)
+
+    find_package(ZLIB REQUIRED)
+    find_package(libzip CONFIG REQUIRED)
+
+    find_package(Vorbis CONFIG REQUIRED)
+    find_package(Ogg CONFIG REQUIRED)
+
+    # SDL propagation shim:
+    # Code uses #include <SDL.h> (SDL2-style), vcpkg provides headers in include/SDL2/SDL.h
+    add_library(hypseus_sdl INTERFACE)
+    target_include_directories(hypseus_sdl INTERFACE
+        $<TARGET_PROPERTY:SDL2::SDL2,INTERFACE_INCLUDE_DIRECTORIES>
+        $<TARGET_PROPERTY:SDL2::SDL2,INTERFACE_INCLUDE_DIRECTORIES>/SDL2
+    )
+    target_link_libraries(hypseus_sdl INTERFACE SDL2::SDL2)
+else()
+    # Non-Windows: keep pkg-config behavior
+    include(FindPkgConfig)
+
+    pkg_search_module(SDL2 REQUIRED sdl2)
+    pkg_search_module(SDL2_TTF REQUIRED SDL2_ttf)
+    pkg_search_module(SDL2_IMAGE REQUIRED SDL2_image)
+    pkg_search_module(SDL2_MIXER REQUIRED SDL2_mixer)
+
+    find_package(ZLIB REQUIRED)
+    find_package(LibZip REQUIRED)
+    find_package(Vorbis REQUIRED)
+    find_package(Ogg REQUIRED)
+
+    # Provide target-style wrappers for consistency
+    add_library(hypseus_sdl INTERFACE)
+    target_include_directories(hypseus_sdl INTERFACE ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(hypseus_sdl INTERFACE ${SDL2_LIBRARIES})
+
+    add_library(SDL2_ttf::SDL2_ttf INTERFACE IMPORTED)
+    set_target_properties(SDL2_ttf::SDL2_ttf PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${SDL2_TTF_INCLUDE_DIRS}"
+        INTERFACE_LINK_LIBRARIES "${SDL2_TTF_LIBRARIES}"
+    )
+
+    add_library(SDL2_image::SDL2_image INTERFACE IMPORTED)
+    set_target_properties(SDL2_image::SDL2_image PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${SDL2_IMAGE_INCLUDE_DIRS}"
+        INTERFACE_LINK_LIBRARIES "${SDL2_IMAGE_LIBRARIES}"
+    )
+
+    add_library(SDL2_mixer::SDL2_mixer INTERFACE IMPORTED)
+    set_target_properties(SDL2_mixer::SDL2_mixer PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${SDL2_MIXER_INCLUDE_DIRS}"
+        INTERFACE_LINK_LIBRARIES "${SDL2_MIXER_LIBRARIES}"
+    )
+
+    add_library(libzip::zip INTERFACE IMPORTED)
+    set_target_properties(libzip::zip PROPERTIES
+        INTERFACE_LINK_LIBRARIES "${LIBZIP_LIBRARY}"
+    )
+endif()
+
 add_subdirectory(3rdparty)
 
 add_subdirectory(cpu)
@@ -132,28 +207,61 @@ add_subdirectory(timer)
 add_subdirectory(video)
 add_subdirectory(vldp)
 
-add_dependencies( vldp libmpeg2 )
-add_dependencies( ldp-out vldp )
-add_dependencies( game vldp )
-add_dependencies( sound vldp )
+# libmpeg2 dependency only when using ExternalProject build
+if(NOT (WIN32 AND MSVC))
+    add_dependencies(vldp libmpeg2)
+endif()
 
-find_package(SDL2 REQUIRED)
-find_package(SDL2_TTF REQUIRED)
-find_package(SDL2_IMAGE REQUIRED)
-find_package(SDL2_MIXER REQUIRED)
-find_package(Vorbis REQUIRED)
+add_dependencies(ldp-out vldp)
+add_dependencies(game vldp)
+add_dependencies(sound vldp)
+
+# Ensure SDL include dirs are present for internal libs that include SDL.h
+foreach(t
+    timer cpu cpu_x86 game video sound io ldp-in scoreboard singeproxy
+)
+    if(TARGET ${t})
+        target_link_libraries(${t} hypseus_sdl)
+    endif()
+endforeach()
 
 if(APPLE)
-    set( SDL2_LIBRARIES ${SDL2_LIBRARY} )
-endif(APPLE)
+    # Legacy compatibility; prefer targets elsewhere
+    set(SDL2_LIBRARIES ${SDL2_LIBRARY})
+endif()
 
 set(HYPSEUS_SOURCES hypseus.cpp globals.h)
 if(WIN32)
     list(APPEND HYPSEUS_SOURCES hypseus.rc)
 endif()
 
-add_executable( hypseus ${HYPSEUS_SOURCES} )
-target_link_libraries( hypseus plog io timer sound video cpu game ${Vorbis_Enc_LIBRARY} Vorbis::vorbis ${OGG_LIBRARIES} ${VORBISFILE_LIBRARIES} ${Vorbis_File_LIBRARY} ${SDL2_LIBRARIES} ${SDL2_TTF_LIBRARY} ${SDL2_MIXER_LIBRARY} ${SDL2_IMAGE_LIBRARY} ${LIBZIP_LIBRARY} )
+add_executable(hypseus ${HYPSEUS_SOURCES})
+
+# Main executable link
+if(WIN32 AND MSVC)
+    target_link_libraries(hypseus PRIVATE
+        plog io timer sound video cpu game
+        hypseus_sdl SDL2::SDL2main
+        SDL2_ttf::SDL2_ttf
+        SDL2_mixer::SDL2_mixer
+        SDL2_image::SDL2_image
+        Vorbis::vorbis Vorbis::vorbisfile Vorbis::vorbisenc
+        Ogg::ogg
+        ZLIB::ZLIB
+        libzip::zip
+    )
+else()
+    target_link_libraries(hypseus PRIVATE
+        plog io timer sound video cpu game
+        hypseus_sdl
+        SDL2_ttf::SDL2_ttf
+        SDL2_mixer::SDL2_mixer
+        SDL2_image::SDL2_image
+        ${Vorbis_Enc_LIBRARY} Vorbis::vorbis ${OGG_LIBRARIES} ${VORBISFILE_LIBRARIES} ${Vorbis_File_LIBRARY}
+        ZLIB::ZLIB
+        libzip::zip
+    )
+endif()
 
 if(ASAN)
     if(NOT MSVC)
@@ -162,15 +270,14 @@ if(ASAN)
 endif()
 
 #[[
-set_source_files_properties( testvldp.cpp PROPERTIES COMPILE_FLAGS -DSHOW_FRAMES)
-add_executable( testvldp testvldp.cpp )
-target_link_libraries( testvldp video vldp ${SDL2_LIBRARIES} ${SDL2_TTF_LIBRARY} ${SDL2_MIXER_LIBRARY} ${SDL2IMAGE_LIBRARY})
+set_source_files_properties(testvldp.cpp PROPERTIES COMPILE_FLAGS -DSHOW_FRAMES)
+add_executable(testvldp testvldp.cpp)
+target_link_libraries(testvldp PRIVATE video vldp hypseus_sdl SDL2_ttf::SDL2_ttf SDL2_mixer::SDL2_mixer SDL2_image::SDL2_image)
 ]]
 
 if(BUILDBOT)
-    add_custom_command( TARGET hypseus
-        POST_BUILD
-	COMMAND ${CMAKE_STRIP} $<TARGET_FILE:hypseus>
+    add_custom_command(TARGET hypseus POST_BUILD
+        COMMAND ${CMAKE_STRIP} $<TARGET_FILE:hypseus>
         COMMAND ${CMAKE_COMMAND} -E remove -f hypseus.zip
         COMMAND 7za a -mpass=4 -mfb=255 -y -tzip hypseus.zip $<TARGET_FILE:hypseus>
         COMMAND ${CMAKE_COMMAND} -E md5sum hypseus.zip > hypseus.md5

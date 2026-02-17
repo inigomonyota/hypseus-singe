@@ -20,7 +20,7 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-// Handles SDL input functions (low-level keyboard/joystick input)
+ // Handles SDL input functions (low-level keyboard/joystick input)
 
 #include "config.h"
 #include "configfile.h"
@@ -46,6 +46,9 @@
 #endif
 
 #include <queue> // STL queue for coin queue
+// SDL2 controller instance IDs (SDL_JoystickID) are not small contiguous indices.
+// Never index fixed arrays by them.
+#include <unordered_map>
 
 using namespace std;
 
@@ -58,7 +61,7 @@ static bool g_hotkey = false;
 
 const int JOY_AXIS_TRIG = (int)(MAX_AXIS * (0.995)); // to trigger the trigger :)
 const int JOY_AXIS_MID  = (int)(MAX_AXIS * (0.75));  // how far they have to move the
-                                                     // joystick before it 'grabs'
+// joystick before it 'grabs'
 
 bool g_use_gamepad       = false;
 bool g_use_joystick      = true;  // use a joystick by default
@@ -72,15 +75,15 @@ bool m_altInputFileSet = false;
 uint8_t thisGame = GAME_UNDEFINED;
 
 const double STICKY_COIN_SECONDS =
-    0.125; // how many seconds a coin acceptor is forced to be "depressed" and
-           // how many seconds it is forced to be "released"
+0.125; // how many seconds a coin acceptor is forced to be "depressed" and
+// how many seconds it is forced to be "released"
 Uint32 g_sticky_coin_cycles = 0; // STICKY_COIN_SECONDS * cpu::get_hz(0), cannot
-                                 // be calculated statically
+// be calculated statically
 queue<struct coin_input> g_coin_queue; // keeps track of coin input to guarantee
-                                       // that coins don't get missed if the cpu
-                                       // is busy (during seeks for example)
+// that coins don't get missed if the cpu
+// is busy (during seeks for example)
 Uint64 g_last_coin_cycle_used = 0; // the cycle value that our last coin press
-                                   // used
+// used
 
 static int g_available_mice = 0;
 static ManyMouseEvent mm_event;
@@ -152,8 +155,63 @@ int joystick_axis_map[MAX_GAMECONTROLLER][SWITCH_START1][4] = {{{0}}};
 // Game controller triggers activated
 bool controller_trigger_pressed[MAX_GAMECONTROLLER][SDL_CONTROLLER_AXIS_MAX] = { {false} };
 
-// Hot-plugging
-int controller_map[MAX_GAMECONTROLLER];
+// --- Controller identity and slot mapping (FIX) ---
+// SDL emits two different identifiers depending on event:
+//  - SDL_CONTROLLERDEVICEADDED:  cdevice.which is a *device index* (0..SDL_NumJoysticks-1)
+//  - SDL_CONTROLLERDEVICEREMOVED: cdevice.which is a *joystick instance id* (SDL_JoystickID)
+//  - SDL_CONTROLLERBUTTON/AXIS:  cbutton.which / caxis.which are *joystick instance ids*
+//
+// This module keeps two mappings:
+//  - instance id -> physical slot (index into g_gamepad_id[])
+//  - physical slot -> logical slot (player order), default identity, optionally reordered by -gamepad_order
+static std::unordered_map<SDL_JoystickID, int> g_inst_to_phys;
+static SDL_JoystickID g_phys_inst[MAX_GAMECONTROLLER];
+static int g_phys_to_logical[MAX_GAMECONTROLLER];
+
+static void gamepad_mapping_reset() {
+    g_inst_to_phys.clear();
+    for (int i = 0; i < MAX_GAMECONTROLLER; ++i) {
+        g_phys_inst[i] = (SDL_JoystickID)0;
+        g_phys_to_logical[i] = i;
+    }
+}
+
+static int gamepad_phys_from_inst(SDL_JoystickID inst) {
+    auto it = g_inst_to_phys.find(inst);
+    if (it != g_inst_to_phys.end()) return it->second;
+
+    // Fallback safety: linear scan (handles cases where a controller was opened
+    // before the map was populated, or after reloads).
+    for (int i = 0; i < MAX_GAMECONTROLLER; ++i) {
+        if (g_gamepad_id[i] && g_phys_inst[i] == inst) {
+            g_inst_to_phys[inst] = i;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int gamepad_logical_from_inst(SDL_JoystickID inst) {
+    const int phys = gamepad_phys_from_inst(inst);
+    if (phys < 0 || phys >= MAX_GAMECONTROLLER) return -1;
+    const int logical = g_phys_to_logical[phys];
+    if (logical < 0 || logical >= MAX_GAMECONTROLLER) return -1;
+    return logical;
+}
+
+static void gamepad_register_slot(int phys, SDL_JoystickID inst) {
+    if (phys < 0 || phys >= MAX_GAMECONTROLLER) return;
+    g_phys_inst[phys] = inst;
+    g_inst_to_phys[inst] = phys;
+}
+
+static void gamepad_unregister_inst(SDL_JoystickID inst) {
+    const int phys = gamepad_phys_from_inst(inst);
+    if (phys >= 0 && phys < MAX_GAMECONTROLLER) {
+        g_phys_inst[phys] = (SDL_JoystickID)0;
+    }
+    g_inst_to_phys.erase(inst);
+}
 
 // Mouse button to key mappings
 // Added by ScottD for Singe
@@ -189,23 +247,27 @@ static void defaultConfig(string config, bool gamepad)
     fclose(pf);
 }
 
-bool mouseButtonMap(SDL_Event *event, bool enable)
-{
-    const int which = controller_map[event->cdevice.which];
+bool mouseButtonMap(SDL_Event* event, bool enable) {
+    // FIX: for controller button events, use cbutton.which (instance id).
+    const SDL_JoystickID inst = event->cbutton.which;
+    const int phys = gamepad_phys_from_inst(inst);
+    if (phys < 0) return false;
+    const int which = g_phys_to_logical[phys];
+    if (which < 0 || which >= MAX_GAMECONTROLLER) return false;
+
     const int button = event->cbutton.button;
 
-    for (int j = 0; j < MAX_CONTROLLERCONFIG; j++) {
-        for (int i = SWITCH_BUTTON1; i < SWITCH_COIN1; ++i) {
-            if (button == joystick_buttons_map[controller_map[j]][i][1]-1) {
+    for (int i = SWITCH_BUTTON1; i < SWITCH_COIN1; ++i) {
+        const int mapped = joystick_buttons_map[which][i][1];
+        if (mapped > 0 && button == mapped - 1) {
+            if (enable) input_enable(i, which + g_gamepad_wad);
+            else input_disable(i, which + g_gamepad_wad);
 
-                if (enable) input_enable(i, which + g_gamepad_wad);
-                else input_disable(i, which + g_gamepad_wad);
-
-                if (g_haptic[0] && g_gamepad_haptic[which])
-                    SDL_GameControllerRumble(SDL_GameControllerFromInstanceID(event->cdevice.which),
-                        g_haptic[0], g_haptic[0], g_haptic[1]);
-                return true;
+            if (g_haptic[0] && g_gamepad_haptic[phys]) {
+                SDL_GameController* gc = SDL_GameControllerFromInstanceID(inst);
+                if (gc) SDL_GameControllerRumble(gc, g_haptic[0], g_haptic[0], g_haptic[1]);
             }
+            return true;
         }
     }
     return false;
@@ -260,9 +322,9 @@ void CFG_Keys()
             // if we read in something besides a blank line
             if (read_line(io, cur_line) > 0) {
                 bool corrupt_file = true; // we use this to avoid doing multiple
-                                          // if/else/break statements
+                // if/else/break statements
 
-                // if we are able to read in the key name
+// if we are able to read in the key name
                 if (find_word(cur_line.c_str(), key_name, cur_line)) {
                     if (strcasecmp(key_name.c_str(), "END") == 0) {
                         end = true;
@@ -290,7 +352,7 @@ void CFG_Keys()
                                         val3 = atoi(sval3.c_str());
                                         if (strcasecmp(key_name.c_str(), g_key_names[0]) == 0) {
                                             if (!g_open_hat && g_use_joystick &&
-                                                    SDL_NumJoysticks() > 0) {
+                                                SDL_NumJoysticks() > 0) {
                                                 int divider = (sval3.length() == 4) ? 1000 : 100;
                                                 g_assigned_hat = (val3 / divider);
                                                 LOGI << fmt("Joystick HAT enabled on stick: [%d]",
@@ -375,7 +437,7 @@ void CFG_Keys()
                                     // if the key line was unknown
                                     if (!found_match) {
                                         cur_line = "Unrecognized key name " +
-                                                   key_name;
+                                            key_name;
                                         LOGW << cur_line;
                                         corrupt_file = true;
                                     }
@@ -481,7 +543,7 @@ static void manymouse_update_mice()
 #endif
 
         switch(mm_event.type) {
-        case MANYMOUSE_EVENT_RELMOTION:
+            case MANYMOUSE_EVENT_RELMOTION:
 
             if (mm_event.item == 0) {
                 mouse->x += mm_event.value;
@@ -499,7 +561,7 @@ static void manymouse_update_mice()
 
             g_game->OnMouseMotion(mouse->x, mouse->y, mouse->relx, mouse->rely, mm_event.device);
             break;
-        case MANYMOUSE_EVENT_ABSMOTION:
+            case MANYMOUSE_EVENT_ABSMOTION:
 
 #ifdef WIN32
             mouse->x = int((mm_event.minval / 65535.0f) * max_width);
@@ -515,7 +577,7 @@ static void manymouse_update_mice()
 #endif
             g_game->OnMouseMotion(mouse->x, mouse->y, mouse->relx, mouse->rely, mm_event.device);
             break;
-        case MANYMOUSE_EVENT_BUTTON:
+            case MANYMOUSE_EVENT_BUTTON:
             if (mm_event.item < MAX_MICE)
             {
                 if (mm_event.value == 1)
@@ -530,7 +592,7 @@ static void manymouse_update_mice()
                 }
             }
             break;
-        case MANYMOUSE_EVENT_SCROLL:
+            case MANYMOUSE_EVENT_SCROLL:
             if (mm_event.item == 0)
             {
                 if (mm_event.value > 0)
@@ -539,11 +601,11 @@ static void manymouse_update_mice()
                     input_disable(SWITCH_MOUSE_SCROLL_DOWN, mm_event.device);
             }
             break;
-        case MANYMOUSE_EVENT_DISCONNECT:
+            case MANYMOUSE_EVENT_DISCONNECT:
             mice[mm_event.device].connected = 0;
             input_disable(SWITCH_MOUSE_DISCONNECT, mm_event.device);
             break;
-        default:
+            default:
             break;
         }
     }
@@ -564,12 +626,14 @@ int SDL_input_init()
     }
     g_sticky_coin_cycles =
         (Uint32)(STICKY_COIN_SECONDS * cpu::get_hz(0)); // only needs to be
-                                                       // calculated once
+    // calculated once
+
+// FIX: reset controller instance-id mappings. Do not treat instance IDs as array indices.
+    gamepad_mapping_reset();
 
     for (int i = 0; i < MAX_GAMECONTROLLER; i++) {
         g_gamepad_haptic[i] = false;
         g_gamepad_id[i] = NULL;
-        controller_map[i] = i;
     }
 
     if (g_use_gamepad) {
@@ -625,7 +689,7 @@ int SDL_input_init()
             }
 
             CFG_Keys(); // NOTE : for some freak reason, this should not be done
-                        // BEFORE the joystick is initialized, I don't know why!
+            // BEFORE the joystick is initialized, I don't know why!
             result = 1;
         } else {
             LOGW << "Input initialization failed!";
@@ -637,67 +701,70 @@ int SDL_input_init()
     // if the mouse is disabled, then filter mouse events out ...
     if (!g_game->get_mouse_enabled())
     {
-         FilterMouseEvents(true);
+        FilterMouseEvents(true);
     }
     else
     {
-         FilterMouseEvents(false);
-         if (thisGame == GAME_UNDEFINED) thisGame = g_game->get_game_type();
+        FilterMouseEvents(false);
+        if (thisGame == GAME_UNDEFINED) thisGame = g_game->get_game_type();
 
-         if (g_game->get_manymouse() && thisGame != GAME_THAYERS)
-             g_mouse_mode = MANY_MOUSE;
+        if (g_game->get_manymouse() && thisGame != GAME_THAYERS)
+            g_mouse_mode = MANY_MOUSE;
 
-         if (!set_mouse_mode(g_mouse_mode)) {
-             LOGE << "Mouse initialization failed";
-             set_quitflag();
-         }
+        if (!set_mouse_mode(g_mouse_mode)) {
+            LOGE << "Mouse initialization failed";
+            set_quitflag();
+        }
     }
 
     return (result);
 }
 
-void reOrderIndex()
-{
-    for (int i = 0; i < MAX_GAMECONTROLLER; ++i)
-    {
-        for (int j = 0; j < MAX_GAMECONTROLLER; ++j)
-        {
-            if (controller_map[i] == g_padindex[j])
-            {
-                controller_map[i] = j;
-                break;
-            }
+void reOrderIndex() {
+    // FIX: g_padindex[] expresses "physical -> logical" ordering.
+    // Example: if g_padindex[0] == 2 then physical slot 2 becomes logical slot 0.
+    // This mapping is applied after enumeration and is used only for routing input.
+    for (int i = 0; i < MAX_GAMECONTROLLER; ++i) {
+        g_phys_to_logical[i] = i;
+    }
+
+    for (int logical = 0; logical < MAX_GAMECONTROLLER; ++logical) {
+        const int phys = g_padindex[logical];
+        if (phys >= 0 && phys < MAX_GAMECONTROLLER) {
+            g_phys_to_logical[phys] = logical;
         }
     }
 
     LOGW << fmt("Gamepad index re-ordering requested: %s", g_inputini_file.c_str());
 }
 
-void SDL_gamepad_init()
-{
+void SDL_gamepad_init() {
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
-         if (SDL_IsGameController(i)) {
-             g_gamepad_id[g_gamepad_attached] = SDL_GameControllerOpen(i);
-             SDL_Joystick* joy = SDL_GameControllerGetJoystick(g_gamepad_id[g_gamepad_attached]);
-             if (joy != NULL) {
-                 SDL_JoystickID id = SDL_JoystickInstanceID(joy);
-                 LOGI << "Gamepad #" << i << "|[" << id << "]" << ": "
-			 << SDL_GameControllerName(g_gamepad_id[g_gamepad_attached]) << " connected";
+        if (SDL_IsGameController(i)) {
+            const int phys = g_gamepad_attached;
+            g_gamepad_id[phys] = SDL_GameControllerOpen(i);
+            SDL_Joystick* joy = SDL_GameControllerGetJoystick(g_gamepad_id[phys]);
+            if (joy != NULL) {
+                SDL_JoystickID id = SDL_JoystickInstanceID(joy);
+                // FIX: register instance-id -> physical slot mapping.
+                gamepad_register_slot(phys, id);
+                LOGI << "Gamepad #" << i << "|[" << id << "]" << ": "
+                    << SDL_GameControllerName(g_gamepad_id[phys]) << " connected";
 
-                 if (enabled_haptic)
-                 {
-                     if (SDL_GameControllerHasRumble(g_gamepad_id[g_gamepad_attached])) {
-                         LOGI << "Gamepad #" << i << "|[" << id << "]"
-                                 << ": Haptic Rumble support";
-                         g_gamepad_haptic[g_gamepad_attached] = true;
-                     }
-                 }
+                if (enabled_haptic)
+                {
+                    if (SDL_GameControllerHasRumble(g_gamepad_id[phys])) {
+                        LOGI << "Gamepad #" << i << "|[" << id << "]"
+                            << ": Haptic Rumble support";
+                        g_gamepad_haptic[phys] = true;
+                    }
+                }
 
-                 g_gamepad_attached++;
+                g_gamepad_attached++;
 
-                 if (g_gamepad_attached > (MAX_GAMECONTROLLER - 1)) {
-                     LOGI << "Max Game Controller limit [" << MAX_GAMECONTROLLER << "] reached";
-                     break;
+                if (g_gamepad_attached > (MAX_GAMECONTROLLER - 1)) {
+                    LOGI << "Max Game Controller limit [" << MAX_GAMECONTROLLER << "] reached";
+                    break;
                 }
             }
         }
@@ -749,6 +816,8 @@ void SDL_input_shutdown(void)
                 g_gamepad_id[i] = NULL;
             }
         }
+        // FIX: clear instance-id mappings.
+        gamepad_mapping_reset();
         SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
     } else
         SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
@@ -771,15 +840,15 @@ void SDL_check_input()
     // if the coin queue has something entered into it
     if (!g_coin_queue.empty()) {
         struct coin_input coin = g_coin_queue.front(); // examine the next
-                                                       // element in the queue
-                                                       // to be considered
+        // element in the queue
+        // to be considered
 
-        // NOTE : when cpu timers are flushed, the coin queue is automatically
-        // "reshuffled"
-        // so it is safe not to check to see whether the cpu timers were flushed
-        // here
+// NOTE : when cpu timers are flushed, the coin queue is automatically
+// "reshuffled"
+// so it is safe not to check to see whether the cpu timers were flushed
+// here
 
-        // if it's safe to activate the coin
+// if it's safe to activate the coin
         if (cpu::get_total_cycles_executed(0) > coin.cycles_when_to_enable) {
             // if we're supposed to enable this coin
             if (coin.coin_enabled) {
@@ -807,7 +876,7 @@ void process_event(SDL_Event *event)
     if (thisGame == GAME_UNDEFINED) thisGame = g_game->get_game_type();
 
     switch (event->type) {
-    case SDL_KEYDOWN:
+        case SDL_KEYDOWN:
         reset_idle(); // added by JFA for -idleexit
 
         // by RDG2010
@@ -824,14 +893,14 @@ void process_event(SDL_Event *event)
 
                 // make sure cast succeeded
                 if (l_thayers) l_thayers->process_keydown(keyPressed);
-// else cast failed, and we would crash if we tried to call process_keydown
-// cast would fail if g_game is not a thayers class
+                // else cast failed, and we would crash if we tried to call process_keydown
+                // cast would fail if g_game is not a thayers class
 
 #ifdef BUILD_SINGE
             } else {
 
                 if (thisGame == GAME_SINGE) {
-                    singe *l_singe = dynamic_cast<singe *>(g_game);
+                    singe* l_singe = dynamic_cast<singe*>(g_game);
                     if (l_singe)
                         l_singe->process_keydown(keyPressed, g_key_defs);
                 }
@@ -840,7 +909,7 @@ void process_event(SDL_Event *event)
         }
 
         break;
-    case SDL_KEYUP:
+        case SDL_KEYUP:
         // MPO : since con_getkey doesn't catch the key up event, we shouldn't
         // call reset_idle here.
         // reset_idle(); // added by JFA for -idleexit
@@ -861,8 +930,8 @@ void process_event(SDL_Event *event)
                 // make sure cast succeeded
                 if (l_thayers) l_thayers->process_keyup(keyPressed);
 
-// else cast failed, and we would crash if we tried to call process_keydown
-// cast would fail if g_game is not a thayers class
+                // else cast failed, and we would crash if we tried to call process_keydown
+                // cast would fail if g_game is not a thayers class
 #ifdef BUILD_SINGE
             } else {
 
@@ -875,73 +944,83 @@ void process_event(SDL_Event *event)
         }
 
         break;
-    case SDL_CONTROLLERDEVICEREMOVED:
-        for (int i = 0; i < MAX_GAMECONTROLLER; i++) {
-            if (g_gamepad_id[i] && event->cdevice.which == SDL_JoystickInstanceID(
-                  SDL_GameControllerGetJoystick(g_gamepad_id[i]))) {
-                LOGI << "GamePad '" << SDL_GameControllerName(g_gamepad_id[i]) << "' disconnected";
-                if (g_gamepad_haptic[i]) {
-                    g_gamepad_haptic[i] = false;
-                }
-                SDL_GameControllerClose(g_gamepad_id[i]);
-                g_gamepad_id[i] = NULL;
-                g_gamepad_attached--;
-                break;
+        case SDL_CONTROLLERDEVICEREMOVED:
+        {
+            // FIX: cdevice.which is an *instance id* for DEVICEREMOVED.
+            const SDL_JoystickID inst = (SDL_JoystickID)event->cdevice.which;
+            const int phys = gamepad_phys_from_inst(inst);
+            if (phys >= 0 && phys < MAX_GAMECONTROLLER && g_gamepad_id[phys]) {
+                LOGI << "GamePad '" << SDL_GameControllerName(g_gamepad_id[phys]) << "' disconnected";
+                g_gamepad_haptic[phys] = false;
+                SDL_GameControllerClose(g_gamepad_id[phys]);
+                g_gamepad_id[phys] = NULL;
+                gamepad_unregister_inst(inst);
+                if (g_gamepad_attached > 0) g_gamepad_attached--;
             }
         }
         break;
-    case SDL_CONTROLLERDEVICEADDED:
-	if (g_index_reset) {
+        case SDL_CONTROLLERDEVICEADDED:
+        if (g_index_reset) {
             LOGW << "Controller hotplugging disabled in reorder mode.";
             break;
         }
         if (g_gamepad_attached < MAX_GAMECONTROLLER) {
             for (int i = 0; i < MAX_GAMECONTROLLER; i++) {
                 if (!g_gamepad_id[i]) {
-                    g_gamepad_id[i] = SDL_GameControllerOpen(event->cdevice.which);
+                    // FIX: DEVICEADDED supplies a *device index*.
+                    const int device_index = event->cdevice.which;
+                    g_gamepad_id[i] = SDL_GameControllerOpen(device_index);
                     SDL_Joystick* joy = SDL_GameControllerGetJoystick(g_gamepad_id[i]);
                     if (joy != NULL) {
                         SDL_JoystickID newid = SDL_JoystickInstanceID(joy);
+                        gamepad_register_slot(i, newid);
                         LOGI << "Gamepad #" << i << "|[" << newid << "]" << ": "
                             << SDL_GameControllerName(g_gamepad_id[i]) << " connected";
                         if (enabled_haptic && !g_gamepad_haptic[i]) {
                             if (SDL_GameControllerHasRumble(g_gamepad_id[i])) {
                                 LOGI << "Gamepad #" << i << "|[" << newid << "]"
-                                        <<  ": Haptic Rumble support";
+                                    << ": Haptic Rumble support";
                                 g_gamepad_haptic[i] = true;
                             }
                         }
-                        controller_map[SDL_JoystickInstanceID(
-                            SDL_GameControllerGetJoystick(g_gamepad_id[i]))] = i;
                         g_gamepad_attached++;
                         break;
                     }
+                    // Failed to obtain joystick for this controller; close and free slot.
+                    SDL_GameControllerClose(g_gamepad_id[i]);
+                    g_gamepad_id[i] = NULL;
                 }
             }
         }
         break;
-    case SDL_CONTROLLERAXISMOTION:
+        case SDL_CONTROLLERAXISMOTION:
         process_controller_motion(event);
         break;
-    case SDL_CONTROLLERBUTTONDOWN:
+        case SDL_CONTROLLERBUTTONDOWN:
         reset_idle(); // added by JFA for -idleexit
         if (g_mouse_mode == MANY_MOUSE)
             if (mouseButtonMap(event, true))
                 break;
         // loop through map and find corresponding action
         for (i = 0; i < SWITCH_COUNT; i++) {
-            const int which = controller_map[event->cdevice.which];
-            if (event->cbutton.button == joystick_buttons_map[which][i][1]-1) {
+            const SDL_JoystickID inst = event->cbutton.which;
+            const int phys = gamepad_phys_from_inst(inst);
+            if (phys < 0) break;
+            const int which = g_phys_to_logical[phys];
+            if (which < 0 || which >= MAX_GAMECONTROLLER) break;
+            const int mapped = joystick_buttons_map[which][i][1];
+            if (mapped > 0 && event->cbutton.button == mapped - 1) {
                 if (i == SWITCH_COIN1) g_hotkey = true;
                 input_enable(i, (g_mouse_mode == MANY_MOUSE) ? which + g_gamepad_wad : NOMOUSE);
-                if (g_haptic[0] && g_gamepad_haptic[which])
-                    SDL_GameControllerRumble(SDL_GameControllerFromInstanceID(event->cdevice.which),
-                        g_haptic[0], g_haptic[0], g_haptic[1]);
+                if (g_haptic[0] && g_gamepad_haptic[phys]) {
+                    SDL_GameController* gc = SDL_GameControllerFromInstanceID(inst);
+                    if (gc) SDL_GameControllerRumble(gc, g_haptic[0], g_haptic[0], g_haptic[1]);
+                }
                 break;
             }
         }
         break;
-    case SDL_CONTROLLERBUTTONUP:
+        case SDL_CONTROLLERBUTTONUP:
         reset_idle(); // added by JFA for -idleexit
         g_hotkey = false;
         if (g_mouse_mode == MANY_MOUSE)
@@ -949,18 +1028,23 @@ void process_event(SDL_Event *event)
                 break;
         // loop through map and find corresponding action
         for (i = 0; i < SWITCH_COUNT; i++) {
-            const int which = controller_map[event->cdevice.which];
-            if (event->cbutton.button == joystick_buttons_map[which][i][1]-1) {
+            const SDL_JoystickID inst = event->cbutton.which;
+            const int phys = gamepad_phys_from_inst(inst);
+            if (phys < 0) break;
+            const int which = g_phys_to_logical[phys];
+            if (which < 0 || which >= MAX_GAMECONTROLLER) break;
+            const int mapped = joystick_buttons_map[which][i][1];
+            if (mapped > 0 && event->cbutton.button == mapped - 1) {
                 input_disable(i, (g_mouse_mode == MANY_MOUSE) ? which + g_gamepad_wad : NOMOUSE);
                 break;
             }
         }
         break;
-    case SDL_JOYAXISMOTION:
+        case SDL_JOYAXISMOTION:
         if (g_use_gamepad) break;
         process_joystick_motion(event);
         break;
-    case SDL_JOYHATMOTION:
+        case SDL_JOYHATMOTION:
         if (g_use_gamepad) break;
         // only process events for the first hat on device
         if (event->jhat.hat == 0) {
@@ -968,7 +1052,7 @@ void process_event(SDL_Event *event)
             process_joystick_hat_motion(event);
         }
         break;
-    case SDL_JOYBUTTONDOWN:
+        case SDL_JOYBUTTONDOWN:
         if (g_use_gamepad) break;
         reset_idle(); // added by JFA for -idleexit
 
@@ -982,7 +1066,7 @@ void process_event(SDL_Event *event)
             }
         }
         break;
-    case SDL_JOYBUTTONUP:
+        case SDL_JOYBUTTONUP:
         if (g_use_gamepad) break;
         reset_idle(); // added by JFA for -idleexit
         g_hotkey = false;
@@ -996,11 +1080,11 @@ void process_event(SDL_Event *event)
             }
         }
         break;
-    case SDL_QUIT:
+        case SDL_QUIT:
         // if they are trying to close the window
         set_quitflag();
         break;
-    default:
+        default:
         break;
     }
 
@@ -1012,29 +1096,29 @@ void process_event(SDL_Event *event)
 
         } else {
 
-           switch (event->type) {
-           case SDL_MOUSEBUTTONDOWN:
-               for (i = 0; i < (sizeof(mouse_buttons_map) / sizeof(int)); i++) {
+            switch (event->type) {
+                case SDL_MOUSEBUTTONDOWN:
+                for (i = 0; i < (sizeof(mouse_buttons_map) / sizeof(int)); i++) {
                     if (event->button.button == i) {
                         g_game->input_enable((Uint8)mouse_buttons_map[i], NOMOUSE);
                         break;
                     }
-               }
-               break;
-           case SDL_MOUSEBUTTONUP:
-               for (i = 0; i < (sizeof(mouse_buttons_map) / sizeof(int)); i++) {
+                }
+                break;
+                case SDL_MOUSEBUTTONUP:
+                for (i = 0; i < (sizeof(mouse_buttons_map) / sizeof(int)); i++) {
                     if (event->button.button == i) {
                         g_game->input_disable((Uint8)mouse_buttons_map[i], NOMOUSE);
                         break;
                     }
-               }
-               break;
-           case SDL_MOUSEMOTION:
-               g_game->OnMouseMotion(event->motion.x, event->motion.y,
-                       event->motion.xrel, event->motion.yrel, NOMOUSE);
-               break;
-          }
-       }
+                }
+                break;
+                case SDL_MOUSEMOTION:
+                g_game->OnMouseMotion(event->motion.x, event->motion.y,
+                    event->motion.xrel, event->motion.yrel, NOMOUSE);
+                break;
+            }
+        }
     }
 
     // added by JFA for -idleexit
@@ -1093,7 +1177,11 @@ void process_controller_motion(SDL_Event *event)
 {
     const int axis = event->caxis.axis;
     const int value = event->caxis.value;
-    const int which = controller_map[event->cdevice.which];
+    const SDL_JoystickID inst = event->caxis.which;
+    const int phys = gamepad_phys_from_inst(inst);
+    if (phys < 0) return;
+    const int which = g_phys_to_logical[phys];
+    if (which < 0 || which >= MAX_GAMECONTROLLER) return;
     g_game->ControllerAxisProxy(axis, value, which);
 
     // Deal with AXIS TRIGGERS
@@ -1127,38 +1215,43 @@ void process_controller_motion(SDL_Event *event)
             prev_y[which] = y;
         }
 
-        for (int j = 0; j < MAX_CONTROLLERCONFIG; j++) {
-            for (int i = 0; i < SWITCH_COUNT; i++) {
-                if (axis == joystick_buttons_map[controller_map[j]][i][1]-AXIS_TRIGGER) {
-
-                    if ((abs(value) > JOY_AXIS_TRIG) &&
-                        !controller_trigger_pressed[controller_map[j]][axis]) {
-                        input_enable(i, which + g_gamepad_wad);
-                        if (g_haptic[0] && g_gamepad_haptic[which])
-                            SDL_GameControllerRumble(SDL_GameControllerFromInstanceID(event->cdevice.which),
-                                g_haptic[0], g_haptic[0], g_haptic[1]);
-                        controller_trigger_pressed[controller_map[j]][axis] = true;
-                    } else if (controller_trigger_pressed[controller_map[j]][axis]) {
-                        input_disable(i, which + g_gamepad_wad);
-                        controller_trigger_pressed[controller_map[j]][axis] = false;
+        // FIX: do not attempt to use a secondary "controller_map" layer here.
+        // Trigger mappings are per-logical slot.
+        for (int i = 0; i < SWITCH_COUNT; i++) {
+            const int mapped = joystick_buttons_map[which][i][1];
+            if (mapped > AXIS_TRIGGER && axis == mapped - AXIS_TRIGGER) {
+                if ((abs(value) > JOY_AXIS_TRIG) && !controller_trigger_pressed[which][axis]) {
+                    input_enable(i, which + g_gamepad_wad);
+                    if (g_haptic[0] && g_gamepad_haptic[phys]) {
+                        SDL_GameController* gc = SDL_GameControllerFromInstanceID(inst);
+                        if (gc) SDL_GameControllerRumble(gc, g_haptic[0], g_haptic[0], g_haptic[1]);
                     }
-                    return;
+                    controller_trigger_pressed[which][axis] = true;
                 }
+                else if (controller_trigger_pressed[which][axis]) {
+                    input_disable(i, which + g_gamepad_wad);
+                    controller_trigger_pressed[which][axis] = false;
+                }
+                return;
             }
         }
 
-    } else {
+    }
+    else {
         for (int i = 0; i < SWITCH_COUNT; i++) {
-            if (axis == joystick_buttons_map[which][i][1]-AXIS_TRIGGER) {
+            const int mapped = joystick_buttons_map[which][i][1];
+            if (mapped > AXIS_TRIGGER && axis == mapped - AXIS_TRIGGER) {
 
                 if ((abs(value) > JOY_AXIS_TRIG)
-                       && !controller_trigger_pressed[which][axis]) {
+                    && !controller_trigger_pressed[which][axis]) {
                     input_enable(i, NOMOUSE);
-                    if (g_haptic[0] && g_gamepad_haptic[which])
-                        SDL_GameControllerRumble(SDL_GameControllerFromInstanceID(event->cdevice.which),
-                            g_haptic[0], g_haptic[0], g_haptic[1]);
+                    if (g_haptic[0] && g_gamepad_haptic[phys]) {
+                        SDL_GameController* gc = SDL_GameControllerFromInstanceID(inst);
+                        if (gc) SDL_GameControllerRumble(gc, g_haptic[0], g_haptic[0], g_haptic[1]);
+                    }
                     controller_trigger_pressed[which][axis] = true;
-                } else if (controller_trigger_pressed[which][axis]) {
+                }
+                else if (controller_trigger_pressed[which][axis]) {
                     input_disable(i, NOMOUSE);
                     controller_trigger_pressed[which][axis] = false;
                 }
@@ -1191,13 +1284,13 @@ void process_controller_motion(SDL_Event *event)
     }
     else {
         if ((key == SWITCH_UP || key == SWITCH_DOWN) &&
-                y_axis_in_use[which]) {
+            y_axis_in_use[which]) {
             input_disable(SWITCH_UP, NOMOUSE);
             input_disable(SWITCH_DOWN, NOMOUSE);
             y_axis_in_use[which] = false;
 
         } else if ((key == SWITCH_LEFT || key == SWITCH_RIGHT) &&
-                x_axis_in_use[which]) {
+            x_axis_in_use[which]) {
             input_disable(SWITCH_LEFT, NOMOUSE);
             input_disable(SWITCH_RIGHT, NOMOUSE);
             x_axis_in_use[which] = false;
@@ -1215,7 +1308,7 @@ void process_joystick_motion(SDL_Event *event)
     int key = -1;
     for (int i = 0; i < SWITCH_START1; i++) {
         if (event->jaxis.which == joystick_axis_map[0][i][0] && event->jaxis.axis == joystick_axis_map[0][i][1]-1
-			&& ((event->jaxis.value < 0) ? -1 : 1) == joystick_axis_map[0][i][2]) {
+            && ((event->jaxis.value < 0) ? -1 : 1) == joystick_axis_map[0][i][2]) {
             key = i;
             break;
         }
@@ -1254,63 +1347,63 @@ void process_joystick_hat_motion(SDL_Event *event)
     switch (hat_movement)
     {
         case SDL_HAT_UP:
-            if (event->jhat.value & SDL_HAT_UP) {
-                if (g_invert_hat) {
-                    input_enable(SWITCH_DOWN, NOMOUSE);
+        if (event->jhat.value & SDL_HAT_UP) {
+            if (g_invert_hat) {
+                input_enable(SWITCH_DOWN, NOMOUSE);
                 } else {
-                    input_enable(SWITCH_UP, NOMOUSE);
-                }
-                prev_hat_position |= SDL_HAT_UP;
-            } else {
-                if (g_invert_hat) {
-                    input_disable(SWITCH_DOWN, NOMOUSE);
-                } else {
-                    input_disable(SWITCH_UP, NOMOUSE);
-                }
-                prev_hat_position &= ~SDL_HAT_UP;
+                input_enable(SWITCH_UP, NOMOUSE);
             }
-            break;
+            prev_hat_position |= SDL_HAT_UP;
+            } else {
+            if (g_invert_hat) {
+                input_disable(SWITCH_DOWN, NOMOUSE);
+                } else {
+                input_disable(SWITCH_UP, NOMOUSE);
+            }
+            prev_hat_position &= ~SDL_HAT_UP;
+        }
+        break;
 
         case SDL_HAT_RIGHT:
-            if (event->jhat.value & SDL_HAT_RIGHT) {
-                input_enable(SWITCH_RIGHT, NOMOUSE);
-                prev_hat_position |= SDL_HAT_RIGHT;
+        if (event->jhat.value & SDL_HAT_RIGHT) {
+            input_enable(SWITCH_RIGHT, NOMOUSE);
+            prev_hat_position |= SDL_HAT_RIGHT;
             } else {
-                input_disable(SWITCH_RIGHT, NOMOUSE);
-                prev_hat_position &= ~SDL_HAT_RIGHT;
-            }
-            break;
+            input_disable(SWITCH_RIGHT, NOMOUSE);
+            prev_hat_position &= ~SDL_HAT_RIGHT;
+        }
+        break;
 
         case SDL_HAT_DOWN:
-            if (event->jhat.value & SDL_HAT_DOWN) {
-                if (g_invert_hat) {
-                    input_enable(SWITCH_UP, NOMOUSE);
+        if (event->jhat.value & SDL_HAT_DOWN) {
+            if (g_invert_hat) {
+                input_enable(SWITCH_UP, NOMOUSE);
                 } else {
-                    input_enable(SWITCH_DOWN, NOMOUSE);
-                }
-                prev_hat_position |= SDL_HAT_DOWN;
-            } else {
-                if (g_invert_hat) {
-                    input_disable(SWITCH_UP, NOMOUSE);
-                } else {
-                    input_disable(SWITCH_DOWN, NOMOUSE);
-                }
-                prev_hat_position &= ~SDL_HAT_DOWN;
+                input_enable(SWITCH_DOWN, NOMOUSE);
             }
-            break;
+            prev_hat_position |= SDL_HAT_DOWN;
+            } else {
+            if (g_invert_hat) {
+                input_disable(SWITCH_UP, NOMOUSE);
+                } else {
+                input_disable(SWITCH_DOWN, NOMOUSE);
+            }
+            prev_hat_position &= ~SDL_HAT_DOWN;
+        }
+        break;
 
         case SDL_HAT_LEFT:
-            if (event->jhat.value & SDL_HAT_LEFT) {
-                input_enable(SWITCH_LEFT, NOMOUSE);
-                prev_hat_position |= SDL_HAT_LEFT;
+        if (event->jhat.value & SDL_HAT_LEFT) {
+            input_enable(SWITCH_LEFT, NOMOUSE);
+            prev_hat_position |= SDL_HAT_LEFT;
             } else {
-                input_disable(SWITCH_LEFT, NOMOUSE);
-                prev_hat_position &= ~SDL_HAT_LEFT;
-            }
-            break;
+            input_disable(SWITCH_LEFT, NOMOUSE);
+            prev_hat_position &= ~SDL_HAT_LEFT;
+        }
+        break;
 
         default:
-            break;
+        break;
     }
 }
 
@@ -1320,32 +1413,32 @@ void input_enable(Uint8 move, Sint8 mouseID)
     // first test universal input, then pass unknown input on to the game driver
 
     switch (move) {
-    default:
+        default:
         g_game->input_enable(move, mouseID);
         break;
-    case SWITCH_RESET:
+        case SWITCH_RESET:
         g_game->reset();
         break;
-    case SWITCH_SCREENSHOT:
+        case SWITCH_SCREENSHOT:
         LOGD << "Screenshot requested!";
         g_ldp->request_screenshot();
         break;
-    case SWITCH_PAUSE:
+        case SWITCH_PAUSE:
         if (thisGame == GAME_SINGE)
             g_game->input_disable(move, mouseID);
         g_game->toggle_game_pause();
         break;
-    case SWITCH_QUIT:
+        case SWITCH_QUIT:
         set_quitflag();
         break;
-    case SWITCH_START1:
+        case SWITCH_START1:
         if (g_hotkey)
             set_quitflag();
         else
             g_game->input_enable(move, mouseID);
         break;
-    case SWITCH_COIN1:
-    case SWITCH_COIN2:
+        case SWITCH_COIN1:
+        case SWITCH_COIN2:
         // coin inputs are buffered to ensure that they are not dropped while
         // the cpu is busy (such as during a seek)
         // therefore if the input is coin1 or coin2 AND we are using a real cpu
@@ -1354,7 +1447,7 @@ void input_enable(Uint8 move, Sint8 mouseID)
             add_coin_to_queue(true, move);
         }
         break;
-    case SWITCH_CONSOLE:
+        case SWITCH_CONSOLE:
         // TODO: implement for SDL2
         break;
     }
@@ -1386,7 +1479,7 @@ inline void add_coin_to_queue(bool enabled, Uint8 val)
     Uint64 total_cycles = cpu::get_total_cycles_executed(0);
     struct coin_input coin;
     coin.coin_enabled = enabled;
-    coin.coin_val     = val;
+    coin.coin_val = val;
 
     // make sure that we are >= to the total cycles executed otherwise coin
     // insertions will be really quick
@@ -1394,10 +1487,10 @@ inline void add_coin_to_queue(bool enabled, Uint8 val)
         g_last_coin_cycle_used = total_cycles;
     }
     g_last_coin_cycle_used += g_sticky_coin_cycles; // advance to the next safe
-                                                    // slot
+    // slot
     coin.cycles_when_to_enable = g_last_coin_cycle_used; // and assign this safe
-                                                         // slot to this current
-                                                         // coin
+    // slot to this current
+    // coin
     g_coin_queue.push(coin); // add the coin to the queue ...
 }
 
@@ -1464,47 +1557,51 @@ void set_haptic(Uint8 value) {
     g_haptic[1] = 0x96;
 }
 
-void do_gamepad_rumble(Uint8 str, Uint8 len, Uint8 id)
-{
-    if (g_gamepad_id[id] && g_gamepad_haptic[id]) {
+void do_gamepad_rumble(Uint8 str, Uint8 len, Uint8 id) {
+    // FIX: public API uses logical id (player slot). Translate to physical slot.
+    int phys = -1;
+    for (int p = 0; p < MAX_GAMECONTROLLER; ++p) {
+        if (g_phys_to_logical[p] == id) { phys = p; break; }
+    }
+    if (phys >= 0 && g_gamepad_id[phys] && g_gamepad_haptic[phys]) {
         Uint16 s = (1 << (str + 0xc)) - 1;
-        SDL_GameControllerRumble(g_gamepad_id[id], s, s, (0x4b << len));
+        SDL_GameControllerRumble(g_gamepad_id[phys], s, s, (0x4b << len));
     }
 }
 
 bool set_mouse_mode(int thisMode)
 {
-   bool result = false;
+    bool result = false;
 
-   if (g_game->get_mouse_enabled())
-   {
-       if (g_mouse_mode == MANY_MOUSE) ManyMouse_Quit();
+    if (g_game->get_mouse_enabled())
+    {
+        if (g_mouse_mode == MANY_MOUSE) ManyMouse_Quit();
 
-       memset(mouse_buttons_map, 0, sizeof(mouse_buttons_map));
+        memset(mouse_buttons_map, 0, sizeof(mouse_buttons_map));
 
-       if (thisMode == SDL_MOUSE) {
+        if (thisMode == SDL_MOUSE) {
 
-           mouse_buttons_map[0] = SWITCH_BUTTON1;  // 0 (Left Button)
-           mouse_buttons_map[1] = SWITCH_BUTTON3;  // 1 (Middle Button)
-           mouse_buttons_map[2] = SWITCH_BUTTON2;  // 2 (Right Button)
-           mouse_buttons_map[3] = SWITCH_BUTTON1;  // 3 (Wheel Up)
-           mouse_buttons_map[4] = SWITCH_BUTTON2;  // 4 (Wheel Down)
-           mouse_buttons_map[5] = SWITCH_MOUSE_DISCONNECT;
-           result = true;
-       }
-       else if (thisMode == MANY_MOUSE)
-       {
-           mouse_buttons_map[0] = SWITCH_BUTTON3;  // 0 (Left Button)
-           mouse_buttons_map[1] = SWITCH_BUTTON1;  // 1 (Middle Button)
-           mouse_buttons_map[2] = SWITCH_BUTTON2;  // 2 (Right Button)
-           mouse_buttons_map[3] = SWITCH_MOUSE_SCROLL_UP;  // 3 (Wheel Up)
-           mouse_buttons_map[4] = SWITCH_MOUSE_SCROLL_DOWN;  // 4 (Wheel Down)
-           mouse_buttons_map[5] = SWITCH_MOUSE_DISCONNECT;
+            mouse_buttons_map[0] = SWITCH_BUTTON1;  // 0 (Left Button)
+            mouse_buttons_map[1] = SWITCH_BUTTON3;  // 1 (Middle Button)
+            mouse_buttons_map[2] = SWITCH_BUTTON2;  // 2 (Right Button)
+            mouse_buttons_map[3] = SWITCH_BUTTON1;  // 3 (Wheel Up)
+            mouse_buttons_map[4] = SWITCH_BUTTON2;  // 4 (Wheel Down)
+            mouse_buttons_map[5] = SWITCH_MOUSE_DISCONNECT;
+            result = true;
+        }
+        else if (thisMode == MANY_MOUSE)
+        {
+            mouse_buttons_map[0] = SWITCH_BUTTON3;  // 0 (Left Button)
+            mouse_buttons_map[1] = SWITCH_BUTTON1;  // 1 (Middle Button)
+            mouse_buttons_map[2] = SWITCH_BUTTON2;  // 2 (Right Button)
+            mouse_buttons_map[3] = SWITCH_MOUSE_SCROLL_UP;  // 3 (Wheel Up)
+            mouse_buttons_map[4] = SWITCH_MOUSE_SCROLL_DOWN;  // 4 (Wheel Down)
+            mouse_buttons_map[5] = SWITCH_MOUSE_DISCONNECT;
 
-           manymouse_init_mice();
-           result = true;
+            manymouse_init_mice();
+            result = true;
 
-       }
-   }
-   return result;
+        }
+    }
+    return result;
 }

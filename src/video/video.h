@@ -44,7 +44,7 @@
 #define YUV_FLAG_GRAYSCALE 0x02
 
 #include "SDL_FontCache.h"
-#include <SDL.h>
+#include <SDL2/SDL.h>
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -96,6 +96,9 @@ enum {
     YUV_SHUTTER,
     YUV_FLASH
 };
+
+bool sample_latest_yuv(int x, int y, uint8_t& outY, uint8_t& outU, uint8_t& outV);
+bool sample_latest_rgb(int x, int y, uint8_t& outR, uint8_t& outG, uint8_t& outB);
 
 bool init_display();
 

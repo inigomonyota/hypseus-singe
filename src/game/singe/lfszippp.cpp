@@ -31,37 +31,42 @@ extern "C" {
 #include "../../io/zippp.h"
 #include <cstring>
 #include <set>
+#include <vector>
+#include <string>
 
 using namespace libzippp;
 
-extern "C" {
-
-extern const char* g_zipFile;
-extern ZipArchive* g_zf;
-extern bool* g_zlfs;
+// C++ globals (DO NOT wrap in extern "C")
+extern const char* g_zipFile; // zip path string (must remain valid)
+extern libzippp::ZipArchive* g_zf;      // archive handle
+extern bool                  g_zlfs;    // lfs-within-zip active flag
 
 struct zip_dir_data {
     std::vector<std::string> ent;
     size_t index;
-
     ~zip_dir_data() = default;
 };
 
-void zip_noentry (lua_State *L) {
+// Exported C ABI symbols (Lua C module entry points)
+extern "C" {
 
-    lua_Debug ar;
-    char caller[64] = "unknown";
+    void zip_noentry(lua_State* L) {
 
-    if (lua_getstack(L, 0, &ar)) {
-        if (lua_getinfo(L, "n", &ar)) {
-            if (ar.name) {
-                strncpy(caller, ar.name, sizeof(caller) - 1);
-                caller[sizeof(caller) - 1] = '\0';
+        lua_Debug ar;
+        char caller[64] = "unknown";
+
+        if (lua_getstack(L, 0, &ar)) {
+            if (lua_getinfo(L, "n", &ar)) {
+                if (ar.name) {
+                    strncpy(caller, ar.name, sizeof(caller) - 1);
+                    caller[sizeof(caller) - 1] = '\0';
+                }
             }
         }
+        luaL_error(L, "The lfs `%s` function is not available within a zip file", caller);
     }
-    luaL_error(L, "The lfs `%s` function is not available within a zip file", caller);
-}
+
+} // extern "C"
 
 static int zip_iter_gc(lua_State* L) {
     zip_dir_data* d = (zip_dir_data*)lua_touserdata(L, 1);
@@ -81,7 +86,7 @@ static int zip_iter(lua_State* L) {
     return 0;
 }
 
-int zip_iter_factory(lua_State* L) {
+extern "C" int zip_iter_factory(lua_State* L) {
 
     const char* path = luaL_checkstring(L, 1);
 
@@ -89,10 +94,12 @@ int zip_iter_factory(lua_State* L) {
         return luaL_error(L, "invalid path argument");
     }
 
-    if (!g_zf->isOpen()) g_zf->open(ZipArchive::ReadOnly);
+    if (!g_zf || !g_zf->isOpen()) {
+        if (g_zf) g_zf->open(ZipArchive::ReadOnly);
+    }
 
-    if (!g_zf->isOpen()) {
-        return luaL_error(L, "cannot open %s via lfs", g_zipFile);
+    if (!g_zf || !g_zf->isOpen()) {
+        return luaL_error(L, "cannot open %s via lfs", (g_zipFile ? g_zipFile : "(null)"));
     }
 
     std::string prefix(path);
@@ -100,7 +107,8 @@ int zip_iter_factory(lua_State* L) {
         prefix += '/';
     }
 
-    *g_zlfs = true;
+    g_zlfs = true;
+
     ZipEntry folder = g_zf->getEntry(prefix.c_str());
     if (!folder.isDirectory()) {
         return luaL_error(L, "cannot open %s: No such directory in zip", prefix.c_str());
@@ -114,15 +122,8 @@ int zip_iter_factory(lua_State* L) {
         if (name.compare(0, prefix.size(), prefix) == 0) {
             std::string rest = name.substr(prefix.size());
             size_t slash_pos = rest.find('/');
-            std::string child_name;
-            if (slash_pos == std::string::npos) {
-                child_name = rest;
-            } else {
-                child_name = rest.substr(0, slash_pos);
-            }
-            if (!child_name.empty()) {
-                child.insert(child_name);
-            }
+            std::string child_name = (slash_pos == std::string::npos) ? rest : rest.substr(0, slash_pos);
+            if (!child_name.empty()) child.insert(child_name);
         }
     }
 
@@ -142,7 +143,6 @@ int zip_iter_factory(lua_State* L) {
 }
 
 static void push_mode(lua_State* L, const ZipEntry& entry) {
-
     if (entry.isDirectory()) lua_pushstring(L, "directory");
     else if (!entry.isNull()) lua_pushstring(L, "file");
     else lua_pushstring(L, "invalid");
@@ -153,19 +153,22 @@ static void push_mtime(lua_State* L, const ZipEntry& entry) {
     lua_pushinteger(L, (lua_Integer)mtime);
 }
 
-int zip_file_info(lua_State* L) {
+extern "C" int zip_file_info(lua_State* L) {
 
     const char* file = luaL_checkstring(L, 1);
 
-    if (!g_zf->isOpen()) g_zf->open(ZipArchive::ReadOnly);
+    if (!g_zf || !g_zf->isOpen()) {
+        if (g_zf) g_zf->open(ZipArchive::ReadOnly);
+    }
 
-    if (!g_zf->isOpen()) {
+    if (!g_zf || !g_zf->isOpen()) {
         lua_pushnil(L);
-        lua_pushfstring(L, "cannot open %s via lfs", g_zipFile);
+        lua_pushfstring(L, "cannot open %s via lfs", (g_zipFile ? g_zipFile : "(null)"));
         return 2;
     }
 
-    *g_zlfs = true;
+    g_zlfs = true;
+
     ZipEntry entry = g_zf->getEntry(file);
 
     if (entry.getSize() == 0) {
@@ -222,6 +225,4 @@ int zip_file_info(lua_State* L) {
     lua_settable(L, -3);
 
     return 1;
-}
-
 }

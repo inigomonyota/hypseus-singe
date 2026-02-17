@@ -47,6 +47,14 @@
 #include "../cpu/cpu-debug.h"
 #endif
 
+#if defined(_MSC_VER)
+#include <string.h>
+#define strcasecmp _stricmp
+#define strncasecmp _strnicmp
+#else
+#include <strings.h>
+#endif
+
 /////////////////////////////////////////////////
 
 // cliff constructor

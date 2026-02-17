@@ -39,6 +39,14 @@
 #include "../video/led.h"
 #include "../sound/sound.h"
 
+#if defined(_MSC_VER)
+#include <string.h>
+#define strcasecmp _stricmp
+#define strncasecmp _strnicmp
+#else
+#include <strings.h>
+#endif
+
 ////////////////
 
 badlands::badlands()

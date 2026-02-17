@@ -156,7 +156,7 @@ void set_cur_dir(const char *exe_loc)
 int main(int argc, char **argv)
 {
     int result_code = 1; // assume an error unless we find otherwise
-    int imgflags = IMG_INIT_PNG | IMG_INIT_JPG;
+    int imgflags = IMG_INIT_PNG;
 
     set_cur_dir(argv[0]); // set active directory
 
@@ -168,8 +168,12 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    if (IMG_Init(imgflags) != imgflags) {
+    if ((IMG_Init(imgflags) & imgflags) != imgflags) {
+        fprintf(stderr, "IMG_Init failed: %s\n", IMG_GetError());
+        fprintf(stderr, "SDL error: %s\n", SDL_GetError());
         printerror("Could not initialize SDL IMG!");
+        TTF_Quit();
+        IMG_Quit();
         SDL_Quit();
         exit(1);
     }

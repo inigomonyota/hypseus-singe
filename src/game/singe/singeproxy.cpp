@@ -19,7 +19,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
+#define NOMINMAX
 #include "singeproxy.h"
 #include "singe_interface.h"
 
@@ -155,7 +155,7 @@ const char*           g_zipFile             = NULL;
 SDL_AudioSpec*        g_sound_load          = NULL;
 
 ZipArchive*           g_zf                  = nullptr;
-bool*                 g_zlfs                = nullptr;
+bool                 g_zlfs                = nullptr;
 vector<ZipEntry>      g_zipList;
 vector<ZipEntry>::iterator m_iter;
 
@@ -706,8 +706,7 @@ SDL_Surface *sep_copy_surface(SDL_Surface *src, SDL_Rect *rect)
     return dst;
 }
 
-void sep_shutdown(void)
-{
+void sep_shutdown(void) {
     sep_release_vldp();
 
     sep_unload_mixers();
@@ -717,7 +716,7 @@ void sep_shutdown(void)
 
     if (g_zf)
     {
-        if (*g_zlfs)
+        if (g_zlfs)
             sep_print("Unloading Zip LFS.");
 
         if (g_zf->isOpen())
@@ -727,9 +726,8 @@ void sep_shutdown(void)
         g_zf = nullptr;
     }
 
-    delete g_zlfs;
-    g_zlfs = nullptr;
-	
+    g_zlfs = false;   // reset flag
+
     if (g_bLuaInitialized)
     {
         lua_close(g_se_lua_context);
@@ -1166,7 +1164,7 @@ SDL_RWops* sep_unzip(std::string s)
              }
         }
         g_zipList.clear();
-        if (!*g_zlfs) g_zf->close();
+        if (!g_zlfs) g_zf->close();
     }
 
     return SDL_RWFromConstMem(found, size);
@@ -2048,123 +2046,47 @@ static int sep_vldp_setvolume(lua_State *L)
 	return 0;
 }
 
-static int sep_mpeg_get_rawpixel(lua_State *L)
-{
+static int sep_mpeg_get_rawpixel(lua_State* L) {
     int n = lua_gettop(L);
-    bool result = false;
-    unsigned char pixel[SDL_BYTESPERPIXEL(g_format)];
-    SDL_Rect rect;
-
-    if (n == 2) {
-        if (lua_isnumber(L, 1)) {
-            if (lua_isnumber(L, 2)) {
-                rect.h = rect.w = 1;
-                rect.x = (int)((double)lua_tonumber(L, 1) * ((double)g_pSingeIn->g_vldp_info->w
-                                          / (double)g_se_overlay_width));
-                rect.y = (int)((double)lua_tonumber(L, 2) * ((double)g_pSingeIn->g_vldp_info->h
-                                          / (double)g_se_overlay_height));
-                if (g_pixelready) {
-                    if (SDL_SetRenderTarget(g_se_renderer, g_se_texture) < 0) {
-                        sep_die("Could not RenderTarget in vldpGetYUVPixel: %s", SDL_GetError());
-                        goto exit;
-                    } else {
-                        if (SDL_RenderReadPixels(g_se_renderer, &rect, g_format, pixel,
-                                SDL_BYTESPERPIXEL(g_format)) < 0) {
-                            sep_die("Could not ReadPixel in vldpGetYUVPixel: %s", SDL_GetError());
-                            goto exit;
-                        }
-                    }
-                    SDL_SetRenderTarget(g_se_renderer, NULL);
-                } else {
-                    g_se_renderer     = video::get_renderer();
-                    g_se_texture      = video::get_yuv_screen();
-
-                    if (g_se_renderer && g_se_texture) {
-                        SDL_QueryTexture(g_se_texture, &g_format, NULL, NULL, NULL);
-                        g_pixelready = true;
-                    }
-                    goto exit;
-	        }
-
-                result = true;
-            }
-        }
+    if (!(n == 2 && lua_isnumber(L, 1) && lua_isnumber(L, 2))) {
+        lua_pushnumber(L, -1); lua_pushnumber(L, -1); lua_pushnumber(L, -1);
+        return 3;
     }
 
-exit:
-    if (result) {
-        lua_pushnumber(L, (int)pixel[0]); // Y
-        lua_pushnumber(L, (int)pixel[2]); // U
-        lua_pushnumber(L, (int)pixel[1]); // V
-    } else {
-        lua_pushnumber(L, -1);
-        lua_pushnumber(L, -1);
-        lua_pushnumber(L, -1);
+    const int x = (int)((double)lua_tonumber(L, 1) * ((double)g_pSingeIn->g_vldp_info->w / (double)g_se_overlay_width));
+    const int y = (int)((double)lua_tonumber(L, 2) * ((double)g_pSingeIn->g_vldp_info->h / (double)g_se_overlay_height));
+
+    uint8_t Y = 0, U = 0, V = 0;
+    if (!video::sample_latest_yuv(x, y, Y, U, V)) {
+        lua_pushnumber(L, -1); lua_pushnumber(L, -1); lua_pushnumber(L, -1);
+        return 3;
     }
+
+    lua_pushnumber(L, (int)Y);
+    lua_pushnumber(L, (int)U);
+    lua_pushnumber(L, (int)V);
     return 3;
 }
 
-static int sep_mpeg_get_pixel(lua_State *L)
-{
+static int sep_mpeg_get_pixel(lua_State* L) {
     int n = lua_gettop(L);
-    bool result = false;
-    unsigned char pixel[SDL_BYTESPERPIXEL(g_format)];
-    unsigned char R, G, B;
-    SDL_Rect rect;
-    int Y, U, V;
-
-    if (n == 2) {
-        if (lua_isnumber(L, 1)) {
-            if (lua_isnumber(L, 2)) {
-                rect.h = rect.w = 1;
-                rect.x = (int)((double)lua_tonumber(L, 1) * ((double)g_pSingeIn->g_vldp_info->w
-                                          / (double)g_se_overlay_width));
-                rect.y = (int)((double)lua_tonumber(L, 2) * ((double)g_pSingeIn->g_vldp_info->h
-                                          / (double)g_se_overlay_height));
-                if (g_pixelready) {
-                    if (SDL_SetRenderTarget(g_se_renderer, g_se_texture) < 0) {
-                        sep_die("Could not RenderTarget in vldpGetPixel: %s", SDL_GetError());
-                        goto exit;
-                    } else {
-                        if (SDL_RenderReadPixels(g_se_renderer, &rect, g_format, pixel,
-                                SDL_BYTESPERPIXEL(g_format)) < 0) {
-                            sep_die("Could not ReadPixel in vldpGetPixel: %s", SDL_GetError());
-                            goto exit;
-                        }
-                    }
-                    SDL_SetRenderTarget(g_se_renderer, NULL);
-                } else {
-                    g_se_renderer     = video::get_renderer();
-                    g_se_texture      = video::get_yuv_screen();
-
-                    if (g_se_renderer && g_se_texture) {
-                        SDL_QueryTexture(g_se_texture, &g_format, NULL, NULL, NULL);
-                        g_pixelready = true;
-                    }
-                    goto exit;
-	        }
-
-                Y = pixel[0] - 16;
-                U = pixel[2] - 128;
-                V = pixel[1] - 128;
-                R = sep_byte_clip(( 298 * Y + 409 * V + 128) >> 8);
-                G = sep_byte_clip(( 298 * Y - 100 * U - 208 * V + 128) >> 8);
-                B = sep_byte_clip(( 298 * Y + 516 * U + 128) >> 8);
-                result = true;
-            }
-        }
+    if (!(n == 2 && lua_isnumber(L, 1) && lua_isnumber(L, 2))) {
+        lua_pushnumber(L, -1); lua_pushnumber(L, -1); lua_pushnumber(L, -1);
+        return 3;
     }
 
-exit:
-    if (result) {
-        lua_pushnumber(L, (int)R);
-        lua_pushnumber(L, (int)G);
-        lua_pushnumber(L, (int)B);
-    } else {
-        lua_pushnumber(L, -1);
-        lua_pushnumber(L, -1);
-        lua_pushnumber(L, -1);
+    const int x = (int)((double)lua_tonumber(L, 1) * ((double)g_pSingeIn->g_vldp_info->w / (double)g_se_overlay_width));
+    const int y = (int)((double)lua_tonumber(L, 2) * ((double)g_pSingeIn->g_vldp_info->h / (double)g_se_overlay_height));
+
+    uint8_t R = 0, G = 0, B = 0;
+    if (!video::sample_latest_rgb(x, y, R, G, B)) {
+        lua_pushnumber(L, -1); lua_pushnumber(L, -1); lua_pushnumber(L, -1);
+        return 3;
     }
+
+    lua_pushnumber(L, (int)R);
+    lua_pushnumber(L, (int)G);
+    lua_pushnumber(L, (int)B);
     return 3;
 }
 
@@ -4374,7 +4296,7 @@ static int sep_doluafile(lua_State *L)
                         }
                     }
                     g_zipList.clear();
-                    if (!*g_zlfs) g_zf->close();
+                    if (!g_zlfs) g_zf->close();
 
                     if (size > 0 && luaL_loadbuffer(L, entry, size, g_zipFile) == 0) {
 

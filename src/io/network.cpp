@@ -64,6 +64,72 @@
 #include "../hypseus.h"
 #include "network.h"
 
+#include <cstring>
+
+#if defined(_WIN32) || defined(_WIN64)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+#elif defined(__APPLE__)
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#elif defined(__linux__)
+#include <cstdio>
+#endif
+
+static void safe_copy(char* dst, size_t dstsz, const char* src) {
+    if (!dst || dstsz == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+#if defined(_WIN32) || defined(_WIN64)
+    strncpy_s(dst, dstsz, src, _TRUNCATE);
+#else
+    std::strncpy(dst, src, dstsz - 1);
+    dst[dstsz - 1] = '\0';
+#endif
+}
+
+#if defined(__linux__)
+static bool read_cpuinfo_field(const char* key, char* out, size_t outsz) {
+    FILE* f = std::fopen("/proc/cpuinfo", "r");
+    if (!f) return false;
+
+    char line[512];
+    const size_t klen = std::strlen(key);
+
+    while (std::fgets(line, sizeof(line), f))
+    {
+        // Match "key : value" (allow spaces before ':')
+        if (std::strncmp(line, key, klen) == 0)
+        {
+            const char* p = line + klen;
+            while (*p == ' ' || *p == '\t') ++p;
+            if (*p != ':') continue;
+            ++p;
+            while (*p == ' ' || *p == '\t') ++p;
+
+            // Strip newline
+            size_t len = std::strlen(p);
+            while (len && (p[len - 1] == '\n' || p[len - 1] == '\r')) --len;
+
+            if (len == 0) { std::fclose(f); return false; }
+
+            char tmp[512];
+            if (len >= sizeof(tmp)) len = sizeof(tmp) - 1;
+            std::memcpy(tmp, p, len);
+            tmp[len] = '\0';
+
+            safe_copy(out, outsz, tmp);
+            std::fclose(f);
+            return true;
+        }
+    }
+
+    std::fclose(f);
+    return false;
+}
+#endif
 
 bool g_send_data_to_server = false; // whether user allows us to send data to
                                    // server
@@ -206,76 +272,108 @@ char *get_video_description()
     return result;
 }
 
-char *get_cpu_name()
-{
-    static char result[NET_LONGSTRSIZE] = {0};
-    strcpy(result, "UnknownCPU"); // default ...
+char* get_cpu_name() {
+    // Keep your original buffer size macro; this just uses it.
+    static char result[NET_LONGSTRSIZE] = { 0 };
+    safe_copy(result, sizeof(result), "UnknownCPU");
 
-#ifdef NATIVE_CPU_X86
-    unsigned int reg_ebx, reg_ecx, reg_edx;
-#if defined(_MSC_VER) && defined(_M_IX86)
-    _asm
+    // --- Windows ---
+#if defined(_WIN32) || defined(_WIN64)
+
+    // x86/x64: CPUID brand string (48 bytes across 0x80000002..4)
+#if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
     {
-		xor eax, eax
-		cpuid
-		mov reg_ebx, ebx
-		mov reg_ecx, ecx
-		mov reg_edx, edx
-    }
+        int regs[4] = { 0,0,0,0 };
+        char brand[64] = { 0 };
+
+        auto do_cpuid = [&](int leaf, int* r)
+            {
+#if defined(_MSC_VER)
+                __cpuid(r, leaf);
+#elif defined(__GNUC__) || defined(__clang__)
+                __asm__ __volatile__(
+                    "cpuid"
+                    : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3])
+                    : "a"(leaf), "c"(0)
+                );
 #else
-    asm("xor %%eax, %%eax\n\t"
-        "cpuid\n\t"
-        : "=b"(reg_ebx), "=c"(reg_ecx), "=d"(reg_edx)
-        :             /* no inputs */
-        : "cc", "eax" /* a is clobbered upon completion */
-        );
+                r[0] = r[1] = r[2] = r[3] = 0;
 #endif
+            };
 
-    result[0] = (char)((reg_ebx)&0xFF);
-    result[1] = (char)((reg_ebx >> 8) & 0xFF);
-    result[2] = (char)((reg_ebx >> 16) & 0xFF);
-    result[3] = (char)(reg_ebx >> 24);
+        do_cpuid(0x80000000, regs);
+        const unsigned int maxExt = (unsigned int)regs[0];
 
-    result[4] = (char)((reg_edx)&0xFF);
-    result[5] = (char)((reg_edx >> 8) & 0xFF);
-    result[6] = (char)((reg_edx >> 16) & 0xFF);
-    result[7] = (char)((reg_edx >> 24) & 0xFF);
+        if (maxExt >= 0x80000004)
+        {
+            int b[4];
+            do_cpuid(0x80000002, b); std::memcpy(brand + 0, b, 16);
+            do_cpuid(0x80000003, b); std::memcpy(brand + 16, b, 16);
+            do_cpuid(0x80000004, b); std::memcpy(brand + 32, b, 16);
+            brand[48] = '\0';
 
-    result[8]  = (char)((reg_ecx)&0xFF);
-    result[9]  = (char)((reg_ecx >> 8) & 0xFF);
-    result[10] = (char)((reg_ecx >> 16) & 0xFF);
-    result[11] = (char)((reg_ecx >> 24) & 0xFF);
-#endif // NATIVE_CPU_X86
-
-#ifdef NATIVE_CPU_MIPS
-    strcpy(result, "MIPS R5900 V2.0"); // assume playstation 2 for now
-#endif                                 // NATIVE_CPU_MIPS
-
-// On Mac, we can tell what type of CPU by simply checking the ifdefs thanks to
-// the universal binary.
-#ifdef MAC_OSX
-#ifdef __PPC__
-    strcpy(result, "PowerPC");
-#else
-    strcpy(result, "GenuineIntel");
-#endif
-#endif
-
-#ifdef LINUX
-    FILE *F;
-    char cpu[64];
-    const char *s = "cat /proc/cpuinfo | grep 'model name' | sed -e 's/^.*: //' | head -1";
-    F = popen(s, "r");
-    if (F)
-    {
-            if (fscanf(F, "%s", cpu) == 1)
-                strcpy(result, cpu);
-
-            pclose(F);
+            // Trim leading spaces
+            const char* p = brand;
+            while (*p == ' ') ++p;
+            if (*p) safe_copy(result, sizeof(result), p);
+            return result;
+        }
     }
 #endif
+
+    // Non-x86: fall back to architecture label
+    SYSTEM_INFO si{};
+    GetNativeSystemInfo(&si);
+    switch (si.wProcessorArchitecture)
+    {
+        case PROCESSOR_ARCHITECTURE_AMD64: safe_copy(result, sizeof(result), "x64"); break;
+        case PROCESSOR_ARCHITECTURE_INTEL: safe_copy(result, sizeof(result), "x86"); break;
+        case PROCESSOR_ARCHITECTURE_ARM:   safe_copy(result, sizeof(result), "ARM"); break;
+        case PROCESSOR_ARCHITECTURE_ARM64: safe_copy(result, sizeof(result), "ARM64"); break;
+        default:                           safe_copy(result, sizeof(result), "UnknownArch"); break;
+    }
+    return result;
+
+    // --- macOS ---
+#elif defined(__APPLE__)
+
+    {
+        char brand[256] = { 0 };
+        size_t sz = sizeof(brand);
+        if (sysctlbyname("machdep.cpu.brand_string", brand, &sz, nullptr, 0) == 0 && brand[0])
+        {
+            safe_copy(result, sizeof(result), brand);
+            return result;
+        }
+    }
+
+    // Fallback: machine type
+    {
+        char machine[256] = { 0 };
+        size_t sz = sizeof(machine);
+        if (sysctlbyname("hw.machine", machine, &sz, nullptr, 0) == 0 && machine[0])
+        {
+            safe_copy(result, sizeof(result), machine);
+            return result;
+        }
+    }
 
     return result;
+
+    // --- Linux ---
+#elif defined(__linux__)
+
+    // Prefer full model name on x86; ARM often uses "Model name", "Processor", or "Hardware".
+    if (read_cpuinfo_field("model name", result, sizeof(result))) return result;
+    if (read_cpuinfo_field("Model name", result, sizeof(result))) return result;
+    if (read_cpuinfo_field("Processor", result, sizeof(result))) return result;
+    if (read_cpuinfo_field("Hardware", result, sizeof(result))) return result;
+
+    return result;
+
+#else
+    return result;
+#endif
 }
 
 char *get_os_description()
